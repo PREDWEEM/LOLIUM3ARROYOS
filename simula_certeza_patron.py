@@ -4,7 +4,7 @@
 # ===============================================================
 # Calcula la evolución temporal de la certeza de clasificación
 # del patrón (P1, P1b, P2, P3) según la fecha de corte.
-# Incluye detección automática de la fecha óptima de predicción.
+# Incluye detección automática de la fecha óptima y etiquetas visuales.
 # ---------------------------------------------------------------
 
 import os, glob
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # ===============================================================
-# 🔍 BLOQUE ROBUSTO DE LECTURA (detecta rutas y nombres complejos)
+# 🔍 BLOQUE ROBUSTO DE LECTURA
 # ===============================================================
 def find_csv_candidates(patterns, roots):
     cands = []
@@ -37,7 +37,6 @@ ROOTS = [
     Path("/mount/src/lolium3arroyos/data"),
     Path("/mnt/data"),
 ]
-
 PATTERNS = [
     "*historico*pronostico*resultados*rango*.csv",
     "*Histórico*Pronóstico*resultados*rango*.csv",
@@ -68,7 +67,6 @@ df["Emer_AC"] = pd.to_numeric(df[col_ac], errors="coerce")
 if df["Emer_AC"].max() > 1.01:
     df["Emer_AC"] /= 100.0
 
-# Derivar emergencia relativa
 ac = df["Emer_AC"].clip(0,1).values
 rel = np.diff(np.r_[0, ac])
 rel[rel < 0] = 0
@@ -76,7 +74,7 @@ df["Emer_Rel"] = rel
 df["JD"] = df["Fecha"].dt.dayofyear
 
 # ===============================================================
-# 🧠 FUNCIONES DE CLASIFICACIÓN
+# 🧠 CLASIFICADOR DE PATRONES
 # ===============================================================
 def normalize(v): s = v.sum(); return v / s if s > 0 else v
 def features(df):
@@ -96,7 +94,7 @@ def classify(f):
     return "P1"
 
 # ===============================================================
-# ⚙️ SIMULACIÓN DE FECHAS DE CORTE
+# ⚙️ SIMULACIÓN TEMPORAL
 # ===============================================================
 feat_full = features(df)
 pat_real = classify(feat_full)
@@ -112,7 +110,6 @@ for jd_corte in intervalos:
     feat = features(sub)
     label = classify(feat)
     certeza = 1 if label==pat_real else 0
-    # proxy de confianza: cuánta info acumulada hay
     prob_aprox = min(1.0, df.loc[df["JD"]<=jd_corte,"Emer_AC"].max()*1.3)
     resultados.append({
         "JD_corte": jd_corte,
@@ -125,36 +122,54 @@ for jd_corte in intervalos:
 df_res = pd.DataFrame(resultados)
 
 # ===============================================================
-# 🧭 DETERMINAR FECHA ÓPTIMA
+# 🧭 FECHA ÓPTIMA
 # ===============================================================
 fecha_opt = None
 if not df_res.empty:
     df_res["Estable"] = df_res["Patron_pred"].eq(df_res["Patron_pred"].shift())
-    # punto donde se estabiliza por primera vez y prob ≥0.8
     opt = df_res[(df_res["Prob_aprox"]>=0.8) & (df_res["Estable"])]
     if not opt.empty:
         fecha_opt = opt.iloc[0]["Fecha_corte"]
         print(f"📅 Fecha óptima detectada: {fecha_opt.date()} (prob ≥ 0.8)")
 
 # ===============================================================
-# 📊 GRÁFICO Y EXPORTACIÓN
+# 📊 GRÁFICO
 # ===============================================================
-plt.figure(figsize=(10,5))
-plt.plot(df_res["Fecha_corte"], df_res["Prob_aprox"], "o-", label="Probabilidad aproximada de acierto", color="tab:blue")
+plt.figure(figsize=(11,5))
+plt.plot(df_res["Fecha_corte"], df_res["Prob_aprox"], "o-", color="tab:blue", label="Probabilidad de acierto")
 plt.scatter(df_res["Fecha_corte"], df_res["Certeza_pred"], c="red", label="Acierto real (1=correcto)")
+
+# Etiquetas de patrón sobre los puntos
+for i, row in df_res.iterrows():
+    plt.text(row["Fecha_corte"], row["Prob_aprox"]+0.03, row["Patron_pred"],
+             ha='center', va='bottom', fontsize=8, color='darkslategray', rotation=45)
+
 if fecha_opt is not None:
     plt.axvline(fecha_opt, color="green", linestyle="--", lw=2,
                 label=f"Fecha óptima ≈ {fecha_opt.date()}")
-plt.title(f"Certeza temporal — Patrón real: {pat_real}")
+
+plt.title(f"Certeza temporal del patrón — Patrón real: {pat_real}")
 plt.ylabel("Probabilidad / Acierto")
 plt.xlabel("Fecha de corte")
 plt.grid(True, ls="--", alpha=0.5)
+plt.ylim(0, 1.1)
 plt.legend()
 plt.tight_layout()
 
 out_png = "certeza_temporal_patron.png"
-out_xlsx = "certeza_temporal_patron.xlsx"
 plt.savefig(out_png, dpi=300)
-df_res.to_excel(out_xlsx, index=False)
 
-print(f"✅ Análisis completado\n📈 {out_png}\n📘 {out_xlsx}")
+# ===============================================================
+# 💾 EXPORTACIÓN ROBUSTA (Excel si posible, CSV si no)
+# ===============================================================
+try:
+    import openpyxl
+    out_xlsx = "certeza_temporal_patron.xlsx"
+    df_res.to_excel(out_xlsx, index=False)
+    print(f"✅ Exportado correctamente a Excel: {out_xlsx}")
+except ImportError:
+    out_csv = "certeza_temporal_patron.csv"
+    df_res.to_csv(out_csv, index=False, encoding="utf-8")
+    print(f"⚠️ 'openpyxl' no está instalado — exportado como CSV: {out_csv}")
+
+print(f"✅ Análisis completado\n📈 {out_png}")
