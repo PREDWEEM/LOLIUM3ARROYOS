@@ -41,7 +41,7 @@ def classify_pattern(feat):
 # =====================================================
 # 1. LEER ARCHIVO HISTÓRICO COMPLETO (AÑO ACTUAL FINALIZADO)
 # =====================================================
-df = pd.read_csv("/mount/src/lolium3arroyos/data/Histórico+Pronóstico_resultados_rango.csv")
+df = pd.read_csv("/mount/src/lolium3arroyos/data/historico_pronostico_resultados_rango.csv")
 df.columns = [c.strip() for c in df.columns]
 df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
 col_ac = [c for c in df.columns if "EMEAC" in c.upper()][0]
