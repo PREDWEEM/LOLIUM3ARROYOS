@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM — Predicción de patrón histórico (diagnóstico al 1 de mayo)
+# 🌾 PREDWEEM — Diagnóstico de patrón histórico de emergencia
 # ===============================================================
 
 import streamlit as st
@@ -99,21 +99,16 @@ colors = {"P1": "tab:blue", "P1b": "tab:orange", "P2": "tab:green", "P3": "tab:r
 # ===============================================================
 # 🔢 PROBABILIDAD DE COINCIDENCIA
 # ===============================================================
-# Correlación entre curva observada y cada patrón canónico (acumulada)
 obs = np.interp(JD, df["JD"], df["Emer_AC"], left=0, right=1)
 probs = {}
 for k, v in patterns.items():
     ref = np.cumsum(v)
-    corr = np.corrcoef(obs, ref)[0,1]
+    corr = np.corrcoef(obs, ref)[0, 1]
     probs[k] = max(0, corr)
-
-# Normalizar a 1
 total = sum(probs.values())
 if total > 0:
     for k in probs:
         probs[k] /= total
-
-# Ranking
 ranking = sorted(probs.items(), key=lambda x: x[1], reverse=True)
 prob_df = pd.DataFrame(ranking, columns=["Patrón", "Probabilidad"])
 prob_df["Nombre agronómico"] = prob_df["Patrón"].map(names)
@@ -121,13 +116,13 @@ prob_df["Nombre agronómico"] = prob_df["Patrón"].map(names)
 # ===============================================================
 # 🎯 RESULTADOS
 # ===============================================================
-st.success(f"**Patrón histórico estimado al 1 de mayo:** {patron_pred} — {names[patron_pred]}")
+st.success(f"**Patrón estimado al 1 de mayo:** {patron_pred} — {names[patron_pred]}")
 st.json(feat)
 st.markdown("### 🔢 Ranking de coincidencia con patrones históricos:")
 st.dataframe(prob_df.style.format({"Probabilidad": "{:.2f}"}))
 
 # ===============================================================
-# 📊 GRÁFICO COMPARATIVO
+# 📊 GRAFICO COMPARATIVO
 # ===============================================================
 fig, ax = plt.subplots(figsize=(10,5))
 ax.plot(df["JD"], df["Emer_AC"], color="black", lw=2.5, label="Emergencia acumulada (real)")
@@ -136,8 +131,10 @@ ax.axvline(jd_corte, color="orange", ls="--", lw=2, label="Diagnóstico (1 mayo)
 
 # Superposición de patrones históricos
 for k, v in patterns.items():
-    ax.plot(JD, np.cumsum(v), color=colors[k], lw=1.8, alpha=0.6,
-            label=f"{k} — {names[k]}")
+    lw = 3.5 if k == patron_pred else 1.5
+    alpha = 0.95 if k == patron_pred else 0.4
+    ax.plot(JD, np.cumsum(v), color=colors[k], lw=lw, alpha=alpha,
+            label=f"{k} — {names[k]}{' ← estimado' if k == patron_pred else ''}")
 
 ax.set_xlim(0, min(300, df["JD"].max() + 10))
 ax.set_ylim(0, 1.05)
@@ -162,5 +159,6 @@ csv_out = resumen.to_csv(index=False).encode("utf-8")
 st.download_button("💾 Descargar resumen de diagnóstico", data=csv_out,
                    file_name="prediccion_patron_1mayo.csv", mime="text/csv")
 
-st.caption("Versión PREDWEEM v3.0 — Diagnóstico de patrones fenológicos con ranking de coincidencia y nombres agronómicos.")
+st.caption("Versión PREDWEEM v4.0 — Diagnóstico de patrones fenológicos con ranking y énfasis visual en el patrón estimado.")
+
 
