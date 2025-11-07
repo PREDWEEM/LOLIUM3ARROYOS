@@ -173,3 +173,23 @@ except ImportError:
     print(f"⚠️ 'openpyxl' no está instalado — exportado como CSV: {out_csv}")
 
 print(f"✅ Análisis completado\n📈 {out_png}")
+
+# ===============================================================
+# 🌾 VISUALIZACIÓN EN STREAMLIT (opcional)
+# ===============================================================
+import streamlit as st
+
+st.title("🌾 PREDWEEM — Certeza temporal del patrón histórico")
+st.image(out_png, caption=f"Gráfico de certeza temporal — Patrón real: {pat_real}", use_container_width=True)
+
+if 'out_xlsx' in locals():
+    st.download_button("📘 Descargar resultados (Excel)", data=open(out_xlsx, "rb").read(), file_name=out_xlsx)
+elif 'out_csv' in locals():
+    st.download_button("📄 Descargar resultados (CSV)", data=open(out_csv, "rb").read(), file_name=out_csv)
+
+
+
+
+
+
+
