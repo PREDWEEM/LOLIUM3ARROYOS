@@ -74,19 +74,13 @@ def classify(f):
 feat = features(df_corte)
 patron_pred = classify(feat)
 
-st.success(f"**Patrón histórico estimado al 1 de mayo:** {patron_pred}")
-st.json(feat)
-
 # ===============================================================
-# 📈 DEFINICIÓN DE PATRONES HISTÓRICOS CANÓNICOS
+# 📈 PATRONES CANÓNICOS + NOMBRES AGRONÓMICOS
 # ===============================================================
 JD = np.arange(1, 301)
-
 def gaussian(x, mu, sigma, amp): return amp * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-
 def normalize_shape(v): return v / v.sum()
 
-# Curvas canónicas
 shape_P1  = normalize_shape(gaussian(JD, 70, 10, 1.0))
 shape_P1b = normalize_shape(gaussian(JD, 85, 12, 0.85) + gaussian(JD, 200, 25, 0.25))
 shape_P2  = normalize_shape(gaussian(JD, 60, 6, 1.0) + gaussian(JD, 140, 12, 0.3))
@@ -94,33 +88,64 @@ shape_P3  = normalize_shape(gaussian(JD, 100, 15, 0.35) + gaussian(JD, 160, 20, 
                             + gaussian(JD, 220, 22, 0.25) + gaussian(JD, 270, 10, 0.20))
 
 patterns = {"P1": shape_P1, "P1b": shape_P1b, "P2": shape_P2, "P3": shape_P3}
-colors   = {"P1": "tab:blue", "P1b": "tab:orange", "P2": "tab:green", "P3": "tab:red"}
+names = {
+    "P1":  "Temprano compacto regular",
+    "P1b": "Temprano con repunte",
+    "P2":  "Bimodal (dos cohortes)",
+    "P3":  "Extendido o multimodal"
+}
+colors = {"P1": "tab:blue", "P1b": "tab:orange", "P2": "tab:green", "P3": "tab:red"}
 
 # ===============================================================
-# 📊 GRAFICO COMPARATIVO
+# 🔢 PROBABILIDAD DE COINCIDENCIA
+# ===============================================================
+# Correlación entre curva observada y cada patrón canónico (acumulada)
+obs = np.interp(JD, df["JD"], df["Emer_AC"], left=0, right=1)
+probs = {}
+for k, v in patterns.items():
+    ref = np.cumsum(v)
+    corr = np.corrcoef(obs, ref)[0,1]
+    probs[k] = max(0, corr)
+
+# Normalizar a 1
+total = sum(probs.values())
+if total > 0:
+    for k in probs:
+        probs[k] /= total
+
+# Ranking
+ranking = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+prob_df = pd.DataFrame(ranking, columns=["Patrón", "Probabilidad"])
+prob_df["Nombre agronómico"] = prob_df["Patrón"].map(names)
+
+# ===============================================================
+# 🎯 RESULTADOS
+# ===============================================================
+st.success(f"**Patrón histórico estimado al 1 de mayo:** {patron_pred} — {names[patron_pred]}")
+st.json(feat)
+st.markdown("### 🔢 Ranking de coincidencia con patrones históricos:")
+st.dataframe(prob_df.style.format({"Probabilidad": "{:.2f}"}))
+
+# ===============================================================
+# 📊 GRÁFICO COMPARATIVO
 # ===============================================================
 fig, ax = plt.subplots(figsize=(10,5))
-
-# Emergencia real
 ax.plot(df["JD"], df["Emer_AC"], color="black", lw=2.5, label="Emergencia acumulada (real)")
 ax.bar(df["JD"], df["Emer_Rel"], color="gray", alpha=0.3, label="Emergencia diaria")
-
-# Línea de diagnóstico (1 mayo)
 ax.axvline(jd_corte, color="orange", ls="--", lw=2, label="Diagnóstico (1 mayo)")
 
-# Patrones históricos
+# Superposición de patrones históricos
 for k, v in patterns.items():
-    ax.plot(JD, np.cumsum(v), color=colors[k], lw=1.5, alpha=0.5,
-            label=f"Patrón {k}")
+    ax.plot(JD, np.cumsum(v), color=colors[k], lw=1.8, alpha=0.6,
+            label=f"{k} — {names[k]}")
 
 ax.set_xlim(0, min(300, df["JD"].max() + 10))
 ax.set_ylim(0, 1.05)
-ax.set_xlabel("Día juliano (JD)")
+ax.set_xlabel("Día Juliano (JD)")
 ax.set_ylabel("Emergencia acumulada")
-ax.set_title(f"Patrón estimado: {patron_pred}")
+ax.set_title(f"Patrón estimado: {patron_pred} — {names[patron_pred]}")
 ax.legend(loc="upper left", fontsize=8)
 ax.grid(True, ls="--", alpha=0.4)
-
 st.pyplot(fig)
 
 # ===============================================================
@@ -130,12 +155,12 @@ resumen = pd.DataFrame([{
     "Fecha_corte": fecha_corte.date(),
     "JD_corte": jd_corte,
     "Patron_predicho": patron_pred,
+    "Nombre_agronomico": names[patron_pred],
     **feat
 }])
-
 csv_out = resumen.to_csv(index=False).encode("utf-8")
 st.download_button("💾 Descargar resumen de diagnóstico", data=csv_out,
                    file_name="prediccion_patron_1mayo.csv", mime="text/csv")
 
-st.caption("Versión PREDWEEM v2.0 — Diagnóstico de patrones fenológicos con comparación histórica.")
+st.caption("Versión PREDWEEM v3.0 — Diagnóstico de patrones fenológicos con ranking de coincidencia y nombres agronómicos.")
 
