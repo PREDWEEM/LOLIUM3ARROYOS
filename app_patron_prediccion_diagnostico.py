@@ -263,3 +263,74 @@ if uploaded:
 
     st.markdown(descripcion_final)
 
+    # ========= FIGURA RESUMEN 2×2 DE PATRONES HISTÓRICOS =========
+    st.subheader("🧭 Resumen visual de los patrones PREDWEEM (1-feb → 1-sep)")
+    
+    # Escala temporal (1-feb → 1-sep)
+    fecha_ini_demo = date(year_ref, 2, 1)
+    fecha_fin_demo = date(year_ref, 9, 1)
+    dias_demo = (fecha_fin_demo - fecha_ini_demo).days
+    x = np.linspace(0, dias_demo, 400)
+    x_date = pd.date_range(start=fecha_ini_demo, end=fecha_fin_demo, periods=len(x))
+    may1 = pd.to_datetime(date(year_ref, 5, 1))
+    
+    # Definición de curvas sintéticas
+    def norm(v): return (v - v.min()) / (v.max() - v.min() + 1e-6)
+    
+    p1  = np.exp(-0.5 * ((x - 35) / 14) ** 2)
+    p1b = np.exp(-0.5 * ((x - 35) / 14) ** 2) + 0.4 * np.exp(-0.5 * ((x - 100) / 18) ** 2)
+    p2  = np.exp(-0.5 * ((x - 35) / 14) ** 2) + np.exp(-0.5 * ((x - 130) / 16) ** 2)
+    p3  = 0.8*np.exp(-0.5*((x-35)/20)**2) + 0.7*np.exp(-0.5*((x-110)/25)**2) + 0.5*np.exp(-0.5*((x-180)/25)**2)
+    
+    p1, p1b, p2, p3 = map(norm, [p1, p1b, p2, p3])
+    
+    # Picos representativos (aproximados)
+    def peak_idx(arr): 
+        from scipy.signal import find_peaks
+        peaks, _ = find_peaks(arr, height=0.3, distance=30)
+        return peaks
+    
+    picos = { "P1": peak_idx(p1), "P1b": peak_idx(p1b), "P2": peak_idx(p2), "P3": peak_idx(p3) }
+    
+    # Descripciones breves
+    desc = {
+        "P1":  "Emergencia rápida, concentrada, asociada a lluvias tempranas.",
+        "P1b": "Pico principal temprano y leve repunte posterior.",
+        "P2":  "Dos pulsos bien separados (bimodalidad clara).",
+        "P3":  "Emergencia prolongada y sostenida hasta invierno."
+    }
+    
+    # Colores de curva
+    colores = { "P1": "royalblue", "P1b": "teal", "P2": "orange", "P3": "crimson" }
+    
+    # Figura 2×2
+    fig3, axs = plt.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
+    fig3.subplots_adjust(hspace=0.3, wspace=0.15)
+    
+    for ax, (tipo, y) in zip(axs.flat, {"P1": p1, "P1b": p1b, "P2": p2, "P3": p3}.items()):
+        ax.plot(x_date, y, color=colores[tipo], lw=2.5)
+        ax.axvline(may1, color="gray", linestyle="--", lw=1)
+        for p in picos[tipo]:
+            ax.plot(x_date[p], y[p], "ro", markersize=5)
+        ax.set_title(f"{tipo} — {desc[tipo]}", fontsize=10)
+        ax.set_ylim(0, 1.05)
+        ax.grid(alpha=0.25)
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+    
+    fig3.suptitle("Patrones históricos de emergencia (P1–P3) — Ejemplos sintéticos 1-feb → 1-sep", fontsize=12)
+    fig3.text(0.5, 0.02, "Fecha calendario (año de referencia)", ha='center')
+    fig3.text(0.02, 0.5, "Emergencia relativa (normalizada)", va='center', rotation='vertical')
+    
+    st.pyplot(fig3)
+    
+    st.markdown("""
+    **Interpretación agronómica general:**
+    - **P1:** campañas con lluvias tempranas y temperatura favorable → emergencia explosiva.  
+    - **P1b:** condiciones variables → emergencia temprana + segundo pequeño pulso.  
+    - **P2:** alternancia seca/húmeda → dos cohortes bien separadas.  
+    - **P3:** persistencia de humedad → emergencia prolongada en otoño e invierno.  
+    
+    📌 Estos patrones resumen los **comportamientos históricos más frecuentes** detectados por los modelos PREDWEEM  
+    en malezas como *Lolium spp.*, *Avena fatua*, *Hirschfeldia incana*, *Euphorbia davidii*, etc.
+    """)
