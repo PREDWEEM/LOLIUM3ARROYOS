@@ -129,47 +129,47 @@ if uploaded:
                 f"<b>mean_sep:</b> {mean_sep:.1f} | <b>std_sep:</b> {std_sep:.1f}</div>", 
                 unsafe_allow_html=True)
 
-    # --- 🔍 DESCRIPCIÓN DETALLADA DEL PATRÓN DETECTADO ---
-st.subheader("🧩 Descripción del patrón detectado")
-
-# Identificar picos posteriores al 1° de mayo
-if len(peaks):
-    fechas_picos = [fechas[p].date() for p in peaks]
-    picos_post_mayo = [f for f in fechas_picos if f > fecha_mayo]
-else:
-    picos_post_mayo = []
-
-# Generar texto descriptivo dinámico
-if tipo == "P1":
-    interpretacion = (
-        "Patrón **P1**: emergencia temprana concentrada en pocas semanas, "
-        "con escasa actividad posterior al 1° de mayo. Indica una cohorte dominante inicial "
-        "y posible ventaja competitiva de la maleza en siembras tardías."
-    )
-elif tipo == "P1b":
-    interpretacion = (
-        "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo. "
-        "Suele asociarse a otoños húmedos y primaveras frescas que reactivan la germinación."
-    )
-elif tipo == "P2":
-    interpretacion = (
-        "Patrón **P2**: emergencia bimodal, con dos pulsos bien definidos — uno previo y otro posterior al 1° de mayo. "
-        "Refleja poblaciones mixtas con distintos requerimientos térmicos o de fotoperíodo."
-    )
-else:
-    interpretacion = (
-        "Patrón **P3**: emergencia extendida o multimodal, con varios picos entre el otoño y la primavera. "
-        "Requiere estrategias de control escalonadas y monitoreo continuo del banco de semillas."
-    )
-
-# Texto de picos detectados
-if picos_post_mayo:
-    fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
-    st.info(f"📆 Picos posteriores al 1° de mayo detectados: **{fechas_str}**")
-else:
-    st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
-
-st.write(interpretacion)
+        # --- 🔍 DESCRIPCIÓN DETALLADA DEL PATRÓN DETECTADO ---
+    st.subheader("🧩 Descripción del patrón detectado")
+    
+    # Identificar picos posteriores al 1° de mayo
+    if len(peaks):
+        fechas_picos = [fechas[p].date() for p in peaks]
+        picos_post_mayo = [f for f in fechas_picos if f > fecha_mayo]
+    else:
+        picos_post_mayo = []
+    
+    # Generar texto descriptivo dinámico
+    if tipo == "P1":
+        interpretacion = (
+            "Patrón **P1**: emergencia temprana concentrada en pocas semanas, "
+            "con escasa actividad posterior al 1° de mayo. Indica una cohorte dominante inicial "
+            "y posible ventaja competitiva de la maleza en siembras tardías."
+        )
+    elif tipo == "P1b":
+        interpretacion = (
+            "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo. "
+            "Suele asociarse a otoños húmedos y primaveras frescas que reactivan la germinación."
+        )
+    elif tipo == "P2":
+        interpretacion = (
+            "Patrón **P2**: emergencia bimodal, con dos pulsos bien definidos — uno previo y otro posterior al 1° de mayo. "
+            "Refleja poblaciones mixtas con distintos requerimientos térmicos o de fotoperíodo."
+        )
+    else:
+        interpretacion = (
+            "Patrón **P3**: emergencia extendida o multimodal, con varios picos entre el otoño y la primavera. "
+            "Requiere estrategias de control escalonadas y monitoreo continuo del banco de semillas."
+        )
+    
+    # Texto de picos detectados
+    if picos_post_mayo:
+        fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
+        st.info(f"📆 Picos posteriores al 1° de mayo detectados: **{fechas_str}**")
+    else:
+        st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
+    
+    st.write(interpretacion)
 
     
     # --- Registro CSV ---
