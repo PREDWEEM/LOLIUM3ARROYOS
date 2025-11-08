@@ -14,7 +14,7 @@ st.title("🌾 Clasificador automático del patrón histórico — Imágenes tip
 
 st.markdown("""
 Este módulo detecta los **picos de emergencia (EMERREL)** a partir de una imagen del gráfico,
-usando el **1 de mayo como fecha crítica** para clasificar entre:
+usando el **1 de mayo como fecha crítica (JD≈121)** para clasificar entre:
 **P1, P1b, P2, P3**, con una estimación de **probabilidad de éxito**.
 """)
 
@@ -39,7 +39,7 @@ if uploaded:
 
     # Extraer curva promedio por columna y garantizar 1D
     curve = np.mean(mask, axis=0)
-    curve = np.ravel(curve)  # aplana el array
+    curve = np.ravel(curve)
     curve = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve = (curve - curve.min()) / (curve.max() - curve.min() + 1e-6)
 
@@ -84,6 +84,12 @@ if uploaded:
         ax.plot(curve, color='royalblue', linewidth=2)
         if len(peaks):
             ax.plot(peaks, curve[peaks], "ro")
+
+        # Línea del 1 de mayo (JD ≈ 121 → escala proporcional)
+        jd_mayo = int(len(curve) * 121 / 300)
+        ax.axvline(jd_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo (JD≈121)")
+        ax.legend(loc='upper right')
+
         ax.set_title(f"Curva detectada — {tipo}")
         ax.set_xlabel("Eje temporal relativo (0–300)")
         ax.set_ylabel("Intensidad normalizada")
