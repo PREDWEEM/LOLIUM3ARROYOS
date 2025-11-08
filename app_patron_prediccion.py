@@ -1,32 +1,49 @@
-
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador automático de patrones históricos (con registro CSV)
+# 🌾 PREDWEEM — Clasificador automático de patrones históricos (Streamlit)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 from datetime import datetime
+from pathlib import Path
 
-st.set_page_config(page_title="Clasificador de patrones PREDWEEM", layout="wide")
-st.title("🌾 Clasificación automática del patrón histórico (con probabilidad y registro)")
+# ========== CONFIGURACIÓN ==========
+st.set_page_config(
+    page_title="Clasificador PREDWEEM",
+    layout="wide",
+    menu_items={"Get help": None, "Report a bug": None, "About": None}
+)
 
-uploaded = st.file_uploader("📤 Cargar imagen (.png, .jpg)", type=["png", "jpg"])
+# Carpeta de resultados
+OUT_DIR = Path("resultados_clasif")
+OUT_DIR.mkdir(exist_ok=True)
+CSV_PATH = OUT_DIR / "hist_patrones.csv"
 
-CSV_PATH = "hist_patrones.csv"
+# ========== INTERFAZ ==========
+st.title("🌾 Clasificador automático de patrón histórico — PREDWEEM")
+st.markdown("""
+Este módulo permite **clasificar automáticamente un patrón de emergencia**
+a partir de una imagen del gráfico EMERREL.  
+La clasificación usa el **1 de mayo** como fecha crítica y asigna un tipo:
+**P1, P1b, P2 o P3**, con una probabilidad de éxito.
+""")
 
+uploaded = st.file_uploader("📤 Cargar imagen del gráfico (.png o .jpg)", type=["png", "jpg"])
+
+# ========== PROCESAMIENTO ==========
 if uploaded:
-    # --- Leer imagen ---
+    # Leer imagen como array OpenCV
     file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    # --- Extraer canal azul ---
-    blue = img[:,:,0].astype(float)
+    # Extraer canal azul (curva principal)
+    blue = img[:, :, 0].astype(float)
     curve = np.mean(blue, axis=0)
     curve = (curve.max() - curve) / (curve.max() - curve.min())
     curve = (curve - curve.min()) / (curve.max() - curve.min())
 
-    # --- Detectar picos ---
+    # Detectar picos
     peaks, props = find_peaks(curve, height=0.2, distance=15)
     heights = props.get("peak_heights", [])
     n_picos = len(peaks)
@@ -34,7 +51,7 @@ if uploaded:
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = heights.max() if len(heights) else 0, np.mean(heights) if len(heights) else 0
 
-    # --- Clasificación ---
+    # Clasificación heurística
     if n_picos == 1:
         tipo, desc = "P1", "Emergencia temprana y compacta"
     elif n_picos == 2 and mean_sep < 30:
@@ -44,7 +61,7 @@ if uploaded:
     else:
         tipo, desc = "P3", "Extendida o multimodal"
 
-    # --- Probabilidad ---
+    # Probabilidad de éxito
     conf = ((hmax - hmean) / (hmax + 0.01)) * np.exp(-0.02 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
     if prob > 0.75:
@@ -54,23 +71,29 @@ if uploaded:
     else:
         nivel = "🔴 Baja"
 
-    # --- Mostrar resultados ---
-    st.image(uploaded, caption="Imagen analizada")
-    fig, ax = plt.subplots()
-    ax.plot(curve, color='royalblue', linewidth=2)
-    if len(peaks):
-        ax.plot(peaks, curve[peaks], "ro")
-    ax.set_title(f"{tipo} — {desc}")
-    ax.set_xlabel("Eje temporal relativo")
-    ax.set_ylabel("EMERREL (normalizado)")
-    st.pyplot(fig)
+    # ========== VISUALIZACIÓN ==========
+    col1, col2 = st.columns([1, 1.5])
 
-    st.success(f"✅ Patrón: **{tipo}** ({desc})")
-    st.info(f"🔍 Probabilidad: **{nivel} ({prob:.2f})**  |  Nº picos: {n_picos}")
+    with col1:
+        st.image(uploaded, caption="📈 Imagen original analizada", use_container_width=True)
+        st.metric("Tipo de patrón", tipo, desc)
+        st.metric("Probabilidad", f"{prob:.2f}", nivel)
+        st.write(f"**N° de picos detectados:** {n_picos}")
 
-    # --- Guardar registro CSV ---
-    row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uploaded.name, tipo, prob, nivel, n_picos]
-    file_exists = os.path.isfile(CSV_PATH)
+    with col2:
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.plot(curve, color='royalblue', linewidth=2)
+        if len(peaks):
+            ax.plot(peaks, curve[peaks], "ro")
+        ax.set_title(f"Curva normalizada — {tipo}")
+        ax.set_xlabel("Eje temporal relativo")
+        ax.set_ylabel("EMERREL (0–1)")
+        st.pyplot(fig)
+
+    # ========== GUARDAR REGISTRO ==========
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = [now, uploaded.name, tipo, prob, nivel, n_picos]
+    file_exists = CSV_PATH.exists()
 
     with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -79,3 +102,11 @@ if uploaded:
         writer.writerow(row)
 
     st.success(f"📄 Registro guardado en **{CSV_PATH}**")
+
+    # Mostrar historial
+    if CSV_PATH.exists():
+        df = np.genfromtxt(CSV_PATH, delimiter=",", dtype=str, skip_header=1)
+        if len(df) > 0:
+            st.subheader("📚 Historial de clasificaciones")
+            st.dataframe(df)
+
