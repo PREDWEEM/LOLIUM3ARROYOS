@@ -1,6 +1,5 @@
-
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador de patrón histórico con diagnóstico visual
+# 🌾 PREDWEEM — Clasificador interactivo de patrón histórico (ajuste en tiempo real)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -10,19 +9,30 @@ from datetime import datetime
 from pathlib import Path
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Diagnóstico", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Diagnóstico")
+st.set_page_config(page_title="Clasificador PREDWEEM — Interactivo", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Modo Interactivo y Diagnóstico")
 
 st.markdown("""
-Esta versión muestra todos los pasos intermedios del análisis de imagen:
-1. Máscara azul detectada  
-2. Curva promedio extraída  
-3. Curva suavizada y normalizada  
-4. Picos detectados  
-5. Clasificación + probabilidad  
----
-🧠 Permite depurar umbrales y asegurar que la detección es correcta.
+Esta versión permite ajustar los parámetros de detección en tiempo real
+para verificar que la curva extraída coincida con la forma de la emergencia (EMERREL).
 """)
+
+# ======== SIDEBAR DE PARÁMETROS ========
+st.sidebar.header("⚙️ Parámetros de ajuste")
+
+# --- Color (HSV) ---
+st.sidebar.subheader("🎨 Detección de color azul (curva EMERREL)")
+h_min = st.sidebar.slider("Hue mínimo (H)", 70, 130, 80)
+h_max = st.sidebar.slider("Hue máximo (H)", 110, 160, 150)
+s_min = st.sidebar.slider("Saturación mínima (S)", 0, 255, 30)
+v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 40)
+
+# --- Curva y picos ---
+st.sidebar.subheader("📈 Detección de picos")
+height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.08, 0.01)
+dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 20, 5)
+gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
+gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 
 # Carpeta de salida
 OUT_DIR = Path("resultados_clasif")
@@ -37,36 +47,34 @@ if uploaded:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    st.image(uploaded, caption="📈 Imagen original analizada", use_container_width=True)
-
-    # --- Detección de color (rango ampliado) ---
-    lower_blue = np.array([80, 30, 40])
-    upper_blue = np.array([150, 255, 255])
+    # --- Detección de color ajustable ---
+    lower_blue = np.array([h_min, s_min, v_min])
+    upper_blue = np.array([h_max, 255, 255])
     mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
 
+    st.image(uploaded, caption="📈 Imagen original analizada", use_container_width=True)
     st.image(mask, caption="🎨 Máscara azul detectada (región de la curva)", use_container_width=True)
 
-    # --- Extracción de curva ---
+    # --- Extracción y suavizado de curva ---
     curve = np.mean(mask, axis=0)
     curve = np.ravel(curve)
     st.line_chart(curve)
     st.caption("🔍 Curva original extraída (antes de suavizado)")
 
-    # --- Suavizado y normalización ---
     curve_smooth = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
-    curve_smooth = curve_smooth ** 0.4  # realce de contraste
-    curve_smooth = np.clip(curve_smooth * 1.5, 0, 1)
+    curve_smooth = curve_smooth ** gamma_corr
+    curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Detección de picos ---
-    peaks, props = find_peaks(curve_smooth, height=0.08, distance=20)
+    # --- Detección de picos interactiva ---
+    peaks, props = find_peaks(curve_smooth, height=height_thr, distance=dist_min)
     heights = props.get("peak_heights", [])
     n_picos = len(peaks)
     mean_sep = np.mean(np.diff(peaks)) if n_picos > 1 else 0
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = (heights.max() if len(heights) else 0), (np.mean(heights) if len(heights) else 0)
 
-    # --- Clasificación heurística ---
+    # --- Clasificación ---
     if n_picos == 1:
         tipo, desc = "P1", "Emergencia temprana y compacta"
     elif n_picos == 2 and mean_sep < 50:
@@ -76,7 +84,7 @@ if uploaded:
     else:
         tipo, desc = "P3", "Extendida o multimodal"
 
-    # --- Probabilidad (recalibrada) ---
+    # --- Probabilidad ajustada ---
     conf = ((hmax - hmean * 0.4) / (hmax + 0.01)) * np.exp(-0.008 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
 
@@ -87,7 +95,7 @@ if uploaded:
     else:
         nivel, color_box = "🔴 Baja", "#ffcccc"
 
-    # --- Visualización de picos detectados ---
+    # --- Visualización de picos ---
     fig, ax = plt.subplots(figsize=(9, 3))
     ax.plot(curve_smooth, color='royalblue', linewidth=2, label="Curva suavizada")
     if len(peaks):
@@ -96,14 +104,14 @@ if uploaded:
     # Línea del 1 de mayo (JD≈121)
     jd_mayo = int(len(curve_smooth) * 121 / 300)
     ax.axvline(jd_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo (JD≈121)")
-    ax.axhline(0.08, color='gray', linestyle='--', alpha=0.4, label="Umbral=0.08")
+    ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
     ax.legend(loc='upper right')
     ax.set_xlabel("Eje temporal relativo (0–300)")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo}")
     st.pyplot(fig)
 
-    # --- Mostrar resultados numéricos ---
+    # --- Mostrar resultados ---
     st.markdown(f"<div style='background-color:{color_box}; padding:10px; border-radius:10px;'>"
                 f"<b>Tipo de patrón:</b> {tipo}<br>"
                 f"<b>Descripción:</b> {desc}<br>"
@@ -113,7 +121,7 @@ if uploaded:
                 f"<b>mean_sep:</b> {mean_sep:.1f} | <b>std_sep:</b> {std_sep:.1f}</div>", 
                 unsafe_allow_html=True)
 
-    # --- Guardar registro CSV ---
+    # --- Registro CSV ---
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [now, uploaded.name, tipo, prob, nivel, n_picos]
     file_exists = CSV_PATH.exists()
@@ -130,3 +138,4 @@ if uploaded:
         if len(df) > 0:
             st.subheader("📚 Historial de clasificaciones")
             st.dataframe(df)
+
