@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificación automática de patrón histórico (imagen tipo gráfico)
+# 🌾 PREDWEEM — Clasificador automático de patrón histórico (imagen tipo gráfico)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -15,7 +15,7 @@ st.title("🌾 Clasificador automático del patrón histórico — Imágenes tip
 st.markdown("""
 Este módulo detecta los **picos de emergencia (EMERREL)** a partir de una imagen del gráfico,
 usando el **1 de mayo como fecha crítica** para clasificar entre:
-**P1, P1b, P2, P3** con una estimación de **probabilidad de éxito**.
+**P1, P1b, P2, P3**, con una estimación de **probabilidad de éxito**.
 """)
 
 # Carpeta de salida
@@ -37,9 +37,10 @@ if uploaded:
     upper_blue = np.array([140, 255, 255])
     mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
 
-    # Extraer curva promedio por columna
+    # Extraer curva promedio por columna y garantizar 1D
     curve = np.mean(mask, axis=0)
-    curve = cv2.GaussianBlur(curve, (9, 9), 0)
+    curve = np.ravel(curve)  # aplana el array
+    curve = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve = (curve - curve.min()) / (curve.max() - curve.min() + 1e-6)
 
     # Detección de picos
@@ -106,4 +107,3 @@ if uploaded:
         if len(df) > 0:
             st.subheader("📚 Historial de clasificaciones")
             st.dataframe(df)
-
