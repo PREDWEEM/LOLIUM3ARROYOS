@@ -37,7 +37,7 @@ v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 160)
 
 # --- Picos ---
 st.sidebar.subheader("📈 Detección de picos")
-height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.18, 0.01)
+height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.8, 0.18, 0.01)
 dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 10, 5)
 gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
 gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
