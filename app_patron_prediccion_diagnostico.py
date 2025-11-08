@@ -263,42 +263,65 @@ if uploaded:
 
     st.markdown(descripcion_final)
 
-    # ========= GRÁFICO ILUSTRATIVO DE PATRONES HISTÓRICOS =========
+        # ========= GRÁFICO ILUSTRATIVO DE PATRONES HISTÓRICOS =========
     st.subheader("📚 Ejemplos ilustrativos de patrones históricos")
     
-    # Curvas sintéticas (0–140 días ~ feb–jun)
-    x = np.linspace(0, 140, 400)
-    x_date = pd.date_range(start=date(year_ref, 2, 1), periods=len(x))
+    # Escala temporal 1-feb → 1-sep (≈210 días)
+    fecha_ini_demo = date(year_ref, 2, 1)
+    fecha_fin_demo = date(year_ref, 9, 1)
+    dias_demo = (fecha_fin_demo - fecha_ini_demo).days
+    x = np.linspace(0, dias_demo, 500)
+    x_date = pd.date_range(start=fecha_ini_demo, end=fecha_fin_demo, periods=len(x))
     
-    # Patrones modelo (formas típicas)
-    p1  = np.exp(-0.5*((x-25)/12)**2)
-    p1b = np.exp(-0.5*((x-25)/12)**2) + 0.4*np.exp(-0.5*((x-75)/15)**2)
-    p2  = np.exp(-0.5*((x-25)/12)**2) + np.exp(-0.5*((x-90)/12)**2)
-    p3  = 0.8*np.exp(-0.5*((x-25)/20)**2) + 0.7*np.exp(-0.5*((x-70)/25)**2) + 0.6*np.exp(-0.5*((x-115)/25)**2)
+    # ======== Patrones sintéticos ========
+    # P1: emergencia rápida y concentrada
+    p1 = np.exp(-0.5 * ((x - 35) / 14) ** 2)
     
-    # Normalizar y escalar
-    def norm(v): return (v - v.min()) / (v.max() - v.min())
+    # P1b: principal temprano + leve repunte posterior
+    p1b = np.exp(-0.5 * ((x - 35) / 14) ** 2) + 0.4 * np.exp(-0.5 * ((x - 100) / 18) ** 2)
+    
+    # P2: bimodal (dos pulsos separados)
+    p2 = np.exp(-0.5 * ((x - 35) / 14) ** 2) + np.exp(-0.5 * ((x - 130) / 16) ** 2)
+    
+    # P3: prolongado y con múltiples cohortes
+    p3 = (
+        0.8 * np.exp(-0.5 * ((x - 35) / 20) ** 2)
+        + 0.7 * np.exp(-0.5 * ((x - 110) / 25) ** 2)
+        + 0.5 * np.exp(-0.5 * ((x - 180) / 25) ** 2)
+    )
+    
+    # Normalización
+    def norm(v): return (v - v.min()) / (v.max() - v.min() + 1e-6)
     p1, p1b, p2, p3 = map(norm, [p1, p1b, p2, p3])
     
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    # ======== Gráfico ========
+    fig2, ax2 = plt.subplots(figsize=(10.5, 4.5))
+    
     ax2.plot(x_date, p1,  color='royalblue',  lw=2.5, label="P1 — Concentrado temprano")
     ax2.plot(x_date, p1b, color='teal',       lw=2.5, label="P1b — Repunte leve posterior")
     ax2.plot(x_date, p2,  color='orange',     lw=2.5, label="P2 — Bimodal otoñal")
-    ax2.plot(x_date, p3,  color='crimson',    lw=2.5, label="P3 — Prolongado/múltiple")
+    ax2.plot(x_date, p3,  color='crimson',    lw=2.5, label="P3 — Prolongado / múltiple")
     
-    ax2.set_title("Ejemplos de patrones históricos de emergencia (curvas sintéticas)")
+    # Línea de referencia 1° de mayo
+    ax2.axvline(pd.to_datetime(date(year_ref, 5, 1)), color='red', linestyle='--', lw=1.2, label="1-may")
+    
+    ax2.set_title("Ejemplos ilustrativos de patrones históricos de emergencia (1-feb → 1-sep)")
     ax2.set_xlabel("Fecha calendario (año de referencia)")
-    ax2.set_ylabel("Emergencia relativa (normalizada)")
+    ax2.set_ylabel("Emergencia relativa normalizada")
     ax2.legend(loc='upper right', fontsize=9)
-    ax2.axvline(pd.to_datetime(fecha_mayo), color='red', linestyle='--', lw=1, label="1-may")
     ax2.grid(alpha=0.25)
     plt.xticks(rotation=45)
     st.pyplot(fig2)
     
+    # ======== Texto descriptivo ========
     st.markdown("""
     **Interpretación visual:**
-    - 🔵 **P1:** emergencia única y concentrada, temprano (marzo–abril).  
-    - 🟢 **P1b:** pico temprano y un leve repunte posterior.  
-    - 🟠 **P2:** bimodal, con un segundo pulso otoñal más marcado.  
-    - 🔴 **P3:** emergencia prolongada, sin pausa clara, hasta el invierno.  
+    - 🔵 **P1:** emergencia única y concentrada, típica de condiciones favorables tempranas.  
+    - 🟢 **P1b:** pico principal temprano con un pequeño repunte posterior.  
+    - 🟠 **P2:** dos pulsos bien definidos, con reactivación otoñal marcada.  
+    - 🔴 **P3:** emergencia prolongada y continua durante todo el otoño-invierno.  
+    
+    📅 Todos los ejemplos están escalados entre **1 de febrero y 1 de septiembre**,  
+    coincidiendo con la ventana típica de seguimiento del modelo **PREDWEEM**.
     """)
+
