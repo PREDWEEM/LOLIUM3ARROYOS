@@ -263,3 +263,42 @@ if uploaded:
 
     st.markdown(descripcion_final)
 
+    # ========= GRÁFICO ILUSTRATIVO DE PATRONES HISTÓRICOS =========
+    st.subheader("📚 Ejemplos ilustrativos de patrones históricos")
+    
+    # Curvas sintéticas (0–140 días ~ feb–jun)
+    x = np.linspace(0, 140, 400)
+    x_date = pd.date_range(start=date(year_ref, 2, 1), periods=len(x))
+    
+    # Patrones modelo (formas típicas)
+    p1  = np.exp(-0.5*((x-25)/12)**2)
+    p1b = np.exp(-0.5*((x-25)/12)**2) + 0.4*np.exp(-0.5*((x-75)/15)**2)
+    p2  = np.exp(-0.5*((x-25)/12)**2) + np.exp(-0.5*((x-90)/12)**2)
+    p3  = 0.8*np.exp(-0.5*((x-25)/20)**2) + 0.7*np.exp(-0.5*((x-70)/25)**2) + 0.6*np.exp(-0.5*((x-115)/25)**2)
+    
+    # Normalizar y escalar
+    def norm(v): return (v - v.min()) / (v.max() - v.min())
+    p1, p1b, p2, p3 = map(norm, [p1, p1b, p2, p3])
+    
+    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    ax2.plot(x_date, p1,  color='royalblue',  lw=2.5, label="P1 — Concentrado temprano")
+    ax2.plot(x_date, p1b, color='teal',       lw=2.5, label="P1b — Repunte leve posterior")
+    ax2.plot(x_date, p2,  color='orange',     lw=2.5, label="P2 — Bimodal otoñal")
+    ax2.plot(x_date, p3,  color='crimson',    lw=2.5, label="P3 — Prolongado/múltiple")
+    
+    ax2.set_title("Ejemplos de patrones históricos de emergencia (curvas sintéticas)")
+    ax2.set_xlabel("Fecha calendario (año de referencia)")
+    ax2.set_ylabel("Emergencia relativa (normalizada)")
+    ax2.legend(loc='upper right', fontsize=9)
+    ax2.axvline(pd.to_datetime(fecha_mayo), color='red', linestyle='--', lw=1, label="1-may")
+    ax2.grid(alpha=0.25)
+    plt.xticks(rotation=45)
+    st.pyplot(fig2)
+    
+    st.markdown("""
+    **Interpretación visual:**
+    - 🔵 **P1:** emergencia única y concentrada, temprano (marzo–abril).  
+    - 🟢 **P1b:** pico temprano y un leve repunte posterior.  
+    - 🟠 **P2:** bimodal, con un segundo pulso otoñal más marcado.  
+    - 🔴 **P3:** emergencia prolongada, sin pausa clara, hasta el invierno.  
+    """)
