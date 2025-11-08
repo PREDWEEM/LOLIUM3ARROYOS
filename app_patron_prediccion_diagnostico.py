@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustado (1-feb → 1-sep)
+# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustado (1-feb → 19-ago)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -10,12 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Febrero a Septiembre", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (1 Feb – 1 Sep)")
+st.set_page_config(page_title="Clasificador PREDWEEM — Febrero a Agosto", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (1 Feb – 19 Ago)")
 
 st.markdown("""
-Esta versión ajusta el eje X a **1 de febrero – 1 de septiembre** (período agronómicamente relevante),
-detecta los picos de emergencia relativos al **1 de mayo**, y genera una **descripción agronómica automática**.
+Esta versión ajusta el eje X a **1 de febrero – 19 de agosto** (período de emergencia invernal),
+detecta los picos relativos al **1 de mayo** y produce una **descripción agronómica automática**.
 """)
 
 # ======== SIDEBAR DE PARÁMETROS ========
@@ -38,8 +38,8 @@ gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 # --- Configuración temporal ---
 st.sidebar.subheader("📅 Escala temporal")
 year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
-fecha_inicio = date(year_ref, 2, 1)  # 1 de febrero
-fecha_fin = date(year_ref, 9, 1)     # 1 de septiembre
+fecha_inicio = date(year_ref, 2, 1)   # 1 de febrero
+fecha_fin = date(year_ref, 8, 19)     # 19 de agosto
 fecha_mayo = date(year_ref, 5, 1)
 
 # ======== SALIDA ========
@@ -71,7 +71,7 @@ if uploaded:
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Escalado a 1-feb → 1-sep ---
+    # --- Escalado fijo de fechas (1-feb → 19-ago) ---
     fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
 
     # --- Detección de picos ---
@@ -82,7 +82,7 @@ if uploaded:
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = (heights.max() if len(heights) else 0), (np.mean(heights) if len(heights) else 0)
 
-    # --- Clasificación de patrón ---
+    # --- Clasificación del patrón ---
     if n_picos == 1:
         tipo, desc = "P1", "Emergencia temprana y compacta"
     elif n_picos == 2 and mean_sep < 50:
@@ -109,14 +109,14 @@ if uploaded:
     if len(peaks):
         ax.plot(fechas[peaks], curve_smooth[peaks], "ro", label="Picos detectados")
 
-    # Sombreados predictivo / posterior
+    # Sombras predictiva / posterior al corte
     ax.axvspan(fecha_inicio, fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
     ax.axvspan(fecha_mayo, fecha_fin, color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
 
     ax.legend(loc='upper right')
-    ax.set_xlabel("Fecha calendario (1-Feb → 1-Sep)")
+    ax.set_xlabel("Fecha calendario (1-Feb → 19-Ago)")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo} (Año {year_ref})")
     plt.xticks(rotation=45)
@@ -132,7 +132,7 @@ if uploaded:
                 f"<b>mean_sep:</b> {mean_sep:.1f} | <b>std_sep:</b> {std_sep:.1f}</div>", 
                 unsafe_allow_html=True)
 
-    # --- Descripción agronómica y fechas de picos ---
+    # --- Descripción agronómica ---
     st.subheader("🧩 Descripción del patrón detectado")
 
     if len(peaks):
@@ -188,4 +188,3 @@ if uploaded:
         if len(df) > 0:
             st.subheader("📚 Historial de clasificaciones")
             st.dataframe(df)
-
