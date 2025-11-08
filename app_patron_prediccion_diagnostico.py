@@ -331,6 +331,4 @@ if uploaded:
     - **P2:** alternancia seca/húmeda → dos cohortes bien separadas.  
     - **P3:** persistencia de humedad → emergencia prolongada en otoño e invierno.  
     
-    📌 Estos patrones resumen los **comportamientos históricos más frecuentes** detectados por los modelos PREDWEEM  
-    en malezas como *Lolium spp.*, *Avena fatua*, *Hirschfeldia incana*, *Euphorbia davidii*, etc.
-    """)
+    
