@@ -172,18 +172,40 @@ if uploaded:
     
     # ========= VISUALIZACIÓN =========
     fig, ax = plt.subplots(figsize=(11, 4))
+    
+    # Curva completa en gris (referencia)
     ax.plot(fechas, curve_smooth, color='lightgray', linewidth=1.5, label="Curva completa")
+    
+    # Tramo analizado (1-feb → 1-may) en azul
     ax.plot(df_periodo["fecha"], df_periodo["valor"], color='royalblue', linewidth=2, label="Tramo 1-feb → 1-may")
     
-    if len(peaks):
-        ax.plot(fechas_sub[peaks], df_periodo["valor"].iloc[peaks], "ro")
-        for p in peaks:
-            ax.text(fechas_sub[p], df_periodo["valor"].iloc[p]+0.02,
-                    fechas_sub[p].strftime("%d-%b"), rotation=45, fontsize=8)
+    # Convertimos las fechas de submuestra a datetime para evitar errores de tipo numpy.datetime64
+    fechas_sub = pd.to_datetime(fechas_sub).to_pydatetime() if len(fechas_sub) else []
     
+    # Marcamos los picos detectados
+    if len(peaks):
+        ax.plot([fechas_sub[p] for p in peaks],
+                [df_periodo["valor"].iloc[p] for p in peaks],
+                "ro", label="Picos detectados")
+        for p in peaks:
+            fecha_pico = pd.to_datetime(fechas_sub[p]).to_pydatetime()
+            ax.text(
+                fecha_pico,
+                min(1.0, df_periodo["valor"].iloc[p] + 0.03),
+                fecha_pico.strftime("%d-%b"),
+                rotation=45,
+                fontsize=8,
+                ha='center'
+            )
+    
+    # Líneas de referencia: 1-febrero y 1-mayo
     ax.axvline(fecha_febrero, color='green', linestyle='--', linewidth=1, label="Inicio (1-feb)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="Fin (1-may)")
+    
+    # Línea de umbral de altura
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4)
+    
+    # Etiquetas y estética
     ax.legend(loc='upper right')
     ax.set_xlabel("Fecha calendario ajustada")
     ax.set_ylabel("Intensidad normalizada")
@@ -191,8 +213,7 @@ if uploaded:
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
-  
-    # ========= DESCRIPCIÓN COMPLETA =========
+      # ========= DESCRIPCIÓN COMPLETA =========
     st.subheader("🌾 Descripción completa del patrón detectado")
 
     if len(peaks):
