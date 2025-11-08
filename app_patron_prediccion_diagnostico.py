@@ -118,7 +118,38 @@ if uploaded:
         st.sidebar.success(f"Autoajuste aplicado: Escala {nueva_escala:.0f}%, Offset {nuevo_offset:+d} días")
         escala_factor, offset_dias = nueva_escala, nuevo_offset
 
-        # ========= CLASIFICACIÓN GLOBAL (solo 1-feb → 1-may) =========
+          # ========= FUNCIÓN DE CLASIFICACIÓN =========
+    from scipy.signal import find_peaks
+    import numpy as np
+    
+    def clasificar(curva, thr, dist):
+        """
+        Detecta picos y clasifica el patrón según cantidad y separación.
+        Devuelve: tipo, probabilidad, peaks, heights, mean_sep, std_sep, hmax, hmean
+        """
+        peaks, props = find_peaks(curva, height=thr, distance=dist)
+        heights = props.get("peak_heights", [])
+        n = len(peaks)
+        mean_sep = np.mean(np.diff(peaks)) if n > 1 else 0.0
+        std_sep  = np.std(np.diff(peaks)) if n > 2 else 0.0
+        hmax     = (heights.max() if len(heights) else 0.0)
+        hmean    = (np.mean(heights) if len(heights) else 0.0)
+    
+        if n == 1:
+            tipo = "P1"
+        elif n == 2 and mean_sep < 50:
+            tipo = "P1b"
+        elif n == 2:
+            tipo = "P2"
+        else:
+            tipo = "P3"
+    
+        conf = ((hmax - hmean * 0.4) / (hmax + 1e-6)) * np.exp(-0.008 * std_sep) if hmax > 0 else 0.0
+        prob = float(np.clip(conf, 0.0, 1.0))
+        return tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean
+          
+         
+    # ========= CLASIFICACIÓN GLOBAL (solo 1-feb → 1-may) =========
     fecha_febrero = date(year_ref, 2, 1)
     fecha_mayo = date(year_ref, 5, 1)
     
