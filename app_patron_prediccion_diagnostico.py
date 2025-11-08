@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustado (1-feb → 18-ago)
+# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustable
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -10,17 +10,16 @@ from pathlib import Path
 import pandas as pd
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Febrero a Agosto", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (1 Feb – 18 Ago)")
+st.set_page_config(page_title="Clasificador PREDWEEM — Eje ajustable", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (eje X ajustable)")
 
 st.markdown("""
-Esta versión ajusta el eje X al rango **1 de febrero – 18 de agosto**, tal como se observa en los gráficos originales.
-Detecta automáticamente los picos de emergencia relativos al **1° de mayo**, calcula su probabilidad y
-genera una **descripción agronómica del patrón**.
+Esta versión permite ajustar manualmente el **rango del eje X (fechas calendario)**.
+Ideal para analizar curvas de emergencia que no cubren el año completo.
 """)
 
-# ======== SIDEBAR DE PARÁMETROS ========
-st.sidebar.header("⚙️ Parámetros de ajuste")
+# ======== SIDEBAR ========
+st.sidebar.header("⚙️ Parámetros de análisis")
 
 # --- Color (HSV) ---
 st.sidebar.subheader("🎨 Detección de color azul (curva EMERREL)")
@@ -36,11 +35,11 @@ dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 10, 5)
 gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
 gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 
-# --- Configuración temporal ---
-st.sidebar.subheader("📅 Escala temporal")
+# --- Escala temporal ajustable ---
+st.sidebar.subheader("📅 Escala temporal del eje X")
 year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
-fecha_inicio = date(year_ref, 2, 1)   # 1 de febrero
-fecha_fin = date(year_ref, 8, 18)     # 18 de agosto
+fecha_inicio = st.sidebar.date_input("Fecha inicial del eje X", date(year_ref, 2, 1))
+fecha_fin = st.sidebar.date_input("Fecha final del eje X", date(year_ref, 8, 18))
 fecha_mayo = date(year_ref, 5, 1)
 
 # ======== SALIDA ========
@@ -72,7 +71,7 @@ if uploaded:
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Escalado de fechas (1-feb → 18-ago) ---
+    # --- Escalado de fechas ajustable ---
     fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
 
     # --- Detección de picos ---
@@ -96,7 +95,6 @@ if uploaded:
     # --- Probabilidad ---
     conf = ((hmax - hmean * 0.4) / (hmax + 0.01)) * np.exp(-0.008 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
-
     if prob > 0.75:
         nivel, color_box = "🔵 Alta", "#c8f7c5"
     elif prob > 0.45:
@@ -114,11 +112,11 @@ if uploaded:
     ax.axvspan(fecha_inicio, fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
     ax.axvspan(fecha_mayo, fecha_fin, color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
-    ax.axvline(fecha_fin, color='green', linestyle='--', linewidth=1.2, label="Fin del rango (18-ago)")
+    ax.axvline(fecha_fin, color='green', linestyle='--', linewidth=1.2, label=f"Fin del rango ({fecha_fin.strftime('%d-%b')})")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
 
     ax.legend(loc='upper right')
-    ax.set_xlabel("Fecha calendario (1-Feb → 18-Ago)")
+    ax.set_xlabel(f"Fecha calendario ({fecha_inicio.strftime('%d-%b')} → {fecha_fin.strftime('%d-%b')})")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo} (Año {year_ref})")
     plt.xticks(rotation=45)
@@ -136,7 +134,6 @@ if uploaded:
 
     # --- Descripción agronómica ---
     st.subheader("🧩 Descripción del patrón detectado")
-
     if len(peaks):
         fechas_picos = [fechas[p].date() for p in peaks]
         picos_post_mayo = [f for f in fechas_picos if f > fecha_mayo]
@@ -146,31 +143,26 @@ if uploaded:
     if tipo == "P1":
         interpretacion = (
             "Patrón **P1**: emergencia temprana concentrada en pocas semanas, "
-            "con escasa actividad posterior al 1° de mayo. Indica una cohorte dominante inicial "
-            "y posible ventaja competitiva en siembras tardías."
+            "con escasa actividad posterior al 1° de mayo."
         )
     elif tipo == "P1b":
         interpretacion = (
-            "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo. "
-            "Asociado a otoños húmedos y primaveras frescas que reactivan la germinación."
+            "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo."
         )
     elif tipo == "P2":
         interpretacion = (
-            "Patrón **P2**: emergencia bimodal, con dos pulsos bien definidos — uno previo y otro posterior al 1° de mayo. "
-            "Refleja poblaciones mixtas con distintos requerimientos térmicos o de fotoperíodo."
+            "Patrón **P2**: emergencia bimodal, con pulsos antes y después del 1° de mayo."
         )
     else:
         interpretacion = (
-            "Patrón **P3**: emergencia extendida o multimodal, con varios picos entre el otoño y la primavera. "
-            "Requiere estrategias de control escalonadas y monitoreo continuo del banco de semillas."
+            "Patrón **P3**: emergencia extendida o multimodal, con actividad sostenida durante todo el periodo."
         )
 
     if picos_post_mayo:
         fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
-        st.info(f"📆 Picos posteriores al 1° de mayo detectados: **{fechas_str}**")
+        st.info(f"📆 Picos posteriores al 1° de mayo: **{fechas_str}**")
     else:
         st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
-
     st.write(interpretacion)
 
     # --- Registro CSV ---
