@@ -51,8 +51,8 @@ fecha_mayo = date(year_ref, 5, 1)
 
 # --- Ajuste manual ---
 st.sidebar.subheader("🧭 Ajuste fino del eje X")
-offset_dias = st.sidebar.slider("Desplazamiento (± días)", -60, 60, 18, 1)
-escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 115, 5)
+offset_dias = st.sidebar.slider("Desplazamiento (± días)", -60, 60, 0, 1)
+escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
 
 # --- Autoajuste ---
 autoajuste = st.sidebar.button("⚡ Autoajustar a rango típico (1-mar → 20-jul)")
