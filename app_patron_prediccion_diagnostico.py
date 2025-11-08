@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustable
+# 🌾 PREDWEEM — Clasificador interactivo con ajuste fino del eje X
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -10,12 +10,16 @@ from pathlib import Path
 import pandas as pd
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Eje ajustable", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (eje X ajustable)")
+st.set_page_config(page_title="Clasificador PREDWEEM — Ajuste fino eje X", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Ajuste fino del eje temporal")
 
 st.markdown("""
-Esta versión permite ajustar manualmente el **rango del eje X (fechas calendario)**.
-Ideal para analizar curvas de emergencia que no cubren el año completo.
+Permite **ajustar el eje X** a la curva detectada:
+- 🕹️ Desplazá la curva horizontalmente (offset de días)
+- 🔍 Cambiá la escala temporal (compresión o estiramiento)
+- 📆 Ajustá manualmente las fechas de inicio y fin
+
+Así podés **alinear los picos detectados con las fechas reales** (por ejemplo, corregir un pico mal posicionado).
 """)
 
 # ======== SIDEBAR ========
@@ -35,12 +39,17 @@ dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 10, 5)
 gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
 gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 
-# --- Escala temporal ajustable ---
-st.sidebar.subheader("📅 Escala temporal del eje X")
+# --- Escala temporal ---
+st.sidebar.subheader("📅 Escala temporal")
 year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
-fecha_inicio = st.sidebar.date_input("Fecha inicial del eje X", date(year_ref, 2, 1))
-fecha_fin = st.sidebar.date_input("Fecha final del eje X", date(year_ref, 8, 18))
+fecha_inicio = st.sidebar.date_input("Fecha inicial", date(year_ref, 2, 1))
+fecha_fin = st.sidebar.date_input("Fecha final", date(year_ref, 8, 18))
 fecha_mayo = date(year_ref, 5, 1)
+
+# --- Ajuste fino del eje X ---
+st.sidebar.subheader("🧭 Ajuste fino del eje X")
+offset_dias = st.sidebar.slider("Desplazamiento temporal (± días)", -60, 60, 0, 1)
+escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
 
 # ======== SALIDA ========
 OUT_DIR = Path("resultados_clasif")
@@ -71,8 +80,12 @@ if uploaded:
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Escalado de fechas ajustable ---
-    fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
+    # --- Ajuste de escala y desplazamiento ---
+    total_dias = (fecha_fin - fecha_inicio).days
+    dias_reales = int(total_dias * (escala_factor / 100))
+    fecha_fin_adj = fecha_inicio + timedelta(days=dias_reales)
+    fechas = pd.date_range(start=fecha_inicio, end=fecha_fin_adj, periods=len(curve_smooth))
+    fechas = fechas + timedelta(days=offset_dias)
 
     # --- Detección de picos ---
     peaks, props = find_peaks(curve_smooth, height=height_thr, distance=dist_min)
@@ -109,14 +122,13 @@ if uploaded:
         ax.plot(fechas[peaks], curve_smooth[peaks], "ro", label="Picos detectados")
 
     # Sombras predictiva / posterior al corte
-    ax.axvspan(fecha_inicio, fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
-    ax.axvspan(fecha_mayo, fecha_fin, color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
+    ax.axvspan(fechas.min(), fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
+    ax.axvspan(fecha_mayo, fechas.max(), color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
-    ax.axvline(fecha_fin, color='green', linestyle='--', linewidth=1.2, label=f"Fin del rango ({fecha_fin.strftime('%d-%b')})")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
 
     ax.legend(loc='upper right')
-    ax.set_xlabel(f"Fecha calendario ({fecha_inicio.strftime('%d-%b')} → {fecha_fin.strftime('%d-%b')})")
+    ax.set_xlabel(f"Fecha calendario ajustada ({fechas.min().strftime('%d-%b')} → {fechas.max().strftime('%d-%b')})")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo} (Año {year_ref})")
     plt.xticks(rotation=45)
@@ -141,22 +153,13 @@ if uploaded:
         picos_post_mayo = []
 
     if tipo == "P1":
-        interpretacion = (
-            "Patrón **P1**: emergencia temprana concentrada en pocas semanas, "
-            "con escasa actividad posterior al 1° de mayo."
-        )
+        interpretacion = "Emergencia temprana concentrada (una cohorte dominante antes de mayo)."
     elif tipo == "P1b":
-        interpretacion = (
-            "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo."
-        )
+        interpretacion = "Emergencia temprana con pequeño repunte luego del 1° de mayo."
     elif tipo == "P2":
-        interpretacion = (
-            "Patrón **P2**: emergencia bimodal, con pulsos antes y después del 1° de mayo."
-        )
+        interpretacion = "Emergencia bimodal: dos pulsos bien definidos antes y después del 1° de mayo."
     else:
-        interpretacion = (
-            "Patrón **P3**: emergencia extendida o multimodal, con actividad sostenida durante todo el periodo."
-        )
+        interpretacion = "Emergencia extendida o multimodal: prolongada en el tiempo."
 
     if picos_post_mayo:
         fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
@@ -176,9 +179,3 @@ if uploaded:
         writer.writerow(row)
 
     st.success(f"📄 Registro guardado en **{CSV_PATH}**")
-
-    if CSV_PATH.exists():
-        df = np.genfromtxt(CSV_PATH, delimiter=",", dtype=str, skip_header=1)
-        if len(df) > 0:
-            st.subheader("📚 Historial de clasificaciones")
-            st.dataframe(df)
