@@ -15,7 +15,7 @@ st.title("🌾 Clasificador automático del patrón histórico — Imágenes tip
 st.markdown("""
 Este módulo detecta los **picos de emergencia (EMERREL)** a partir de una imagen del gráfico,
 usando el **1 de mayo como fecha crítica (JD≈121)** para clasificar entre:
-**P1, P1b, P2, P3**, con una estimación de **probabilidad de éxito**.
+**P1, P1b, P2, P3**, con una estimación de **probabilidad de éxito** y registro automático.
 """)
 
 # Carpeta de salida
@@ -32,26 +32,27 @@ if uploaded:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Máscara para tonos azules (curva EMERREL)
+    # --- Máscara azul (curva EMERREL) ---
     lower_blue = np.array([90, 50, 70])
     upper_blue = np.array([140, 255, 255])
     mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
 
-    # Extraer curva promedio por columna y garantizar 1D
+    # --- Extraer curva promedio (1D) ---
     curve = np.mean(mask, axis=0)
     curve = np.ravel(curve)
     curve = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve = (curve - curve.min()) / (curve.max() - curve.min() + 1e-6)
+    curve = curve ** 0.5  # realce de contraste leve
 
-    # Detección de picos
-    peaks, props = find_peaks(curve, height=0.25, distance=25)
+    # --- Detección de picos más sensible ---
+    peaks, props = find_peaks(curve, height=0.10, distance=25)
     heights = props.get("peak_heights", [])
     n_picos = len(peaks)
     mean_sep = np.mean(np.diff(peaks)) if n_picos > 1 else 0
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = heights.max() if len(heights) else 0, np.mean(heights) if len(heights) else 0
 
-    # Clasificación heurística
+    # --- Clasificación heurística ---
     if n_picos == 1:
         tipo, desc = "P1", "Emergencia temprana y compacta"
     elif n_picos == 2 and mean_sep < 50:
@@ -61,23 +62,27 @@ if uploaded:
     else:
         tipo, desc = "P3", "Extendida o multimodal"
 
-    # Probabilidad de éxito
-    conf = ((hmax - hmean) / (hmax + 0.01)) * np.exp(-0.015 * std_sep)
+    # --- Probabilidad ajustada ---
+    conf = ((hmax - hmean * 0.5) / (hmax + 0.01)) * np.exp(-0.010 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
+
     if prob > 0.75:
-        nivel = "🔵 Alta"
+        nivel, color_box = "🔵 Alta", "#c8f7c5"  # verde claro
     elif prob > 0.45:
-        nivel = "🟠 Media"
+        nivel, color_box = "🟠 Media", "#fff3b0"  # amarillo
     else:
-        nivel = "🔴 Baja"
+        nivel, color_box = "🔴 Baja", "#ffcccc"  # rosado
 
     # ======== VISUALIZACIÓN ========
     col1, col2 = st.columns([1, 1.5])
+
     with col1:
         st.image(uploaded, caption="📈 Imagen original analizada", use_container_width=True)
-        st.metric("Tipo de patrón", tipo, desc)
-        st.metric("Probabilidad", f"{prob:.2f}", nivel)
-        st.write(f"**N° de picos detectados:** {n_picos}")
+        st.markdown(f"<div style='background-color:{color_box}; padding:10px; border-radius:10px;'>"
+                    f"<b>Tipo de patrón:</b> {tipo}<br>"
+                    f"<b>Descripción:</b> {desc}<br>"
+                    f"<b>Probabilidad:</b> {nivel} ({prob:.2f})<br>"
+                    f"<b>N° de picos detectados:</b> {n_picos}</div>", unsafe_allow_html=True)
 
     with col2:
         fig, ax = plt.subplots(figsize=(8, 3))
@@ -85,7 +90,7 @@ if uploaded:
         if len(peaks):
             ax.plot(peaks, curve[peaks], "ro")
 
-        # Línea del 1 de mayo (JD ≈ 121 → escala proporcional)
+        # Línea del 1 de mayo (JD ≈ 121)
         jd_mayo = int(len(curve) * 121 / 300)
         ax.axvline(jd_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo (JD≈121)")
         ax.legend(loc='upper right')
