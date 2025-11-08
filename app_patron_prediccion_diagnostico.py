@@ -48,7 +48,7 @@ fecha_mayo = date(year_ref, 5, 1)
 
 # --- Ajuste fino del eje X ---
 st.sidebar.subheader("🧭 Ajuste fino del eje X")
-offset_dias = st.sidebar.slider("Desplazamiento temporal (± días)", -60, 60, 0, 1)
+offset_dias = st.sidebar.slider("Desplazamiento temporal (± días)", -60, 60, 38, 1)
 escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
 
 # ======== SALIDA ========
