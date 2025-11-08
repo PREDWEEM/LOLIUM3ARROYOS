@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con eje calendario
+# 🌾 PREDWEEM — Clasificador interactivo con eje calendario y descripción agronómica
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -14,8 +14,9 @@ st.set_page_config(page_title="Clasificador PREDWEEM — Eje calendario", layout
 st.title("🌾 Clasificador de patrón histórico — Modo Interactivo con eje calendario")
 
 st.markdown("""
-Esta versión permite ajustar los parámetros de detección en tiempo real
-y muestra el eje X en **fecha calendario (1 Ene – 31 Dic)**.
+Esta versión ajusta el eje X a **fechas calendario reales (enero–julio)**,
+detecta los picos de emergencia relativos al **1 de mayo**, y
+muestra una **descripción agronómica automática** del patrón detectado.
 """)
 
 # ======== SIDEBAR DE PARÁMETROS ========
@@ -39,7 +40,6 @@ gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 st.sidebar.subheader("📅 Escala temporal")
 year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
 fecha_inicio = date(year_ref, 1, 1)
-fecha_fin = date(year_ref, 12, 31)
 
 # ======== SALIDA ========
 OUT_DIR = Path("resultados_clasif")
@@ -70,9 +70,6 @@ if uploaded:
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # Generar eje de fechas calendario proporcional al largo de la curva
-    fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
-
     # --- Detección de picos ---
     peaks, props = find_peaks(curve_smooth, height=height_thr, distance=dist_min)
     heights = props.get("peak_heights", [])
@@ -80,6 +77,18 @@ if uploaded:
     mean_sep = np.mean(np.diff(peaks)) if n_picos > 1 else 0
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = (heights.max() if len(heights) else 0), (np.mean(heights) if len(heights) else 0)
+
+    # --- Escalado dinámico hasta último pico o 20 de julio ---
+    fecha_limite_default = date(year_ref, 7, 20)
+    if len(peaks) > 0:
+        indice_max = peaks.max()
+        proporcion = indice_max / len(curve_smooth)
+        dias_hasta_julio20 = (fecha_limite_default - fecha_inicio).days
+        fecha_limite = fecha_inicio + timedelta(days=int(proporcion * dias_hasta_julio20))
+    else:
+        fecha_limite = fecha_limite_default
+
+    fechas = pd.date_range(start=fecha_inicio, end=fecha_limite, periods=len(curve_smooth))
 
     # --- Clasificación ---
     if n_picos == 1:
@@ -102,24 +111,27 @@ if uploaded:
     else:
         nivel, color_box = "🔴 Baja", "#ffcccc"
 
-    # --- Visualización de picos con eje calendario ---
+    # --- Visualización del gráfico ---
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(fechas, curve_smooth, color='royalblue', linewidth=2, label="Curva suavizada")
     if len(peaks):
         ax.plot(fechas[peaks], curve_smooth[peaks], "ro", label="Picos detectados")
 
-    # Línea del 1 de mayo
+    # Línea y sombreado temporal
     fecha_mayo = date(year_ref, 5, 1)
+    ax.axvspan(fecha_inicio, fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
+    ax.axvspan(fecha_mayo, fecha_limite, color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
+
     ax.legend(loc='upper right')
     ax.set_xlabel("Fecha calendario")
     ax.set_ylabel("Intensidad normalizada")
-    ax.set_title(f"Curva detectada — {tipo}")
+    ax.set_title(f"Curva detectada — {tipo} (periodo: Ene–{fecha_limite.strftime('%b')})")
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
-    # --- Resultados ---
+    # --- Resultados numéricos ---
     st.markdown(f"<div style='background-color:{color_box}; padding:10px; border-radius:10px;'>"
                 f"<b>Tipo de patrón:</b> {tipo}<br>"
                 f"<b>Descripción:</b> {desc}<br>"
@@ -129,27 +141,25 @@ if uploaded:
                 f"<b>mean_sep:</b> {mean_sep:.1f} | <b>std_sep:</b> {std_sep:.1f}</div>", 
                 unsafe_allow_html=True)
 
-        # --- 🔍 DESCRIPCIÓN DETALLADA DEL PATRÓN DETECTADO ---
+    # --- DESCRIPCIÓN AGRONÓMICA ---
     st.subheader("🧩 Descripción del patrón detectado")
-    
-    # Identificar picos posteriores al 1° de mayo
+
     if len(peaks):
         fechas_picos = [fechas[p].date() for p in peaks]
         picos_post_mayo = [f for f in fechas_picos if f > fecha_mayo]
     else:
         picos_post_mayo = []
-    
-    # Generar texto descriptivo dinámico
+
     if tipo == "P1":
         interpretacion = (
             "Patrón **P1**: emergencia temprana concentrada en pocas semanas, "
             "con escasa actividad posterior al 1° de mayo. Indica una cohorte dominante inicial "
-            "y posible ventaja competitiva de la maleza en siembras tardías."
+            "y posible ventaja competitiva en siembras tardías."
         )
     elif tipo == "P1b":
         interpretacion = (
             "Patrón **P1b**: emergencia principal temprana con un repunte breve posterior al 1° de mayo. "
-            "Suele asociarse a otoños húmedos y primaveras frescas que reactivan la germinación."
+            "Asociado a otoños húmedos y primaveras frescas que reactivan la germinación."
         )
     elif tipo == "P2":
         interpretacion = (
@@ -161,17 +171,15 @@ if uploaded:
             "Patrón **P3**: emergencia extendida o multimodal, con varios picos entre el otoño y la primavera. "
             "Requiere estrategias de control escalonadas y monitoreo continuo del banco de semillas."
         )
-    
-    # Texto de picos detectados
+
     if picos_post_mayo:
         fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
         st.info(f"📆 Picos posteriores al 1° de mayo detectados: **{fechas_str}**")
     else:
         st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
-    
+
     st.write(interpretacion)
 
-    
     # --- Registro CSV ---
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [now, uploaded.name, tipo, prob, nivel, n_picos]
@@ -189,5 +197,4 @@ if uploaded:
         if len(df) > 0:
             st.subheader("📚 Historial de clasificaciones")
             st.dataframe(df)
-
 
