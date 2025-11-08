@@ -330,5 +330,5 @@ if uploaded:
     - **P1b:** condiciones variables → emergencia temprana + segundo pequeño pulso.  
     - **P2:** alternancia seca/húmeda → dos cohortes bien separadas.  
     - **P3:** persistencia de humedad → emergencia prolongada en otoño e invierno.  
-    
+    """)
     
