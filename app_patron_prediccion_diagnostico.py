@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con ajuste fino del eje X
+# 🌾 PREDWEEM — Clasificador unificado (curva azul + áreas de color)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -9,30 +9,33 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 import pandas as pd
 
-# ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Ajuste fino eje X", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Ajuste fino del eje temporal")
+# ========= CONFIGURACIÓN =========
+st.set_page_config(page_title="Clasificador PREDWEEM — Unificado", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Detección adaptable con ajuste fino de eje temporal")
 
 st.markdown("""
-Permite **ajustar el eje X** a la curva detectada:
-- 🕹️ Desplazá la curva horizontalmente (offset de días)
-- 🔍 Cambiá la escala temporal (compresión o estiramiento)
-- 📆 Ajustá manualmente las fechas de inicio y fin
-
-Así podés **alinear los picos detectados con las fechas reales** (por ejemplo, corregir un pico mal posicionado).
+Compatible con gráficos tipo **EMERREL (curva azul)** y **áreas multicolor (verde/amarillo/rojo)**.  
+Permite ajustar el eje X manualmente y generar una descripción agronómica completa del patrón detectado.
 """)
 
-# ======== SIDEBAR ========
+# ========= SIDEBAR =========
 st.sidebar.header("⚙️ Parámetros de análisis")
 
-# --- Color (HSV) ---
-st.sidebar.subheader("🎨 Detección de color azul (curva EMERREL)")
+# --- Tipo de gráfico ---
+modo = st.sidebar.radio(
+    "🎨 Tipo de gráfico a analizar:",
+    ["Curva azul (ANN / PREDWEEM)", "Áreas de color (verde/amarillo/rojo)"],
+    index=0
+)
+
+# --- Color HSV (solo curva azul) ---
+st.sidebar.subheader("🎨 Detección de color azul (solo modo curva)")
 h_min = st.sidebar.slider("Hue mínimo (H)", 70, 130, 80)
 h_max = st.sidebar.slider("Hue máximo (H)", 110, 160, 150)
 s_min = st.sidebar.slider("Saturación mínima (S)", 0, 255, 30)
 v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 160)
 
-# --- Curva y picos ---
+# --- Picos ---
 st.sidebar.subheader("📈 Detección de picos")
 height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.18, 0.01)
 dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 10, 5)
@@ -46,48 +49,59 @@ fecha_inicio = st.sidebar.date_input("Fecha inicial", date(year_ref, 2, 1))
 fecha_fin = st.sidebar.date_input("Fecha final", date(year_ref, 8, 18))
 fecha_mayo = date(year_ref, 5, 1)
 
-# --- Ajuste fino del eje X ---
+# --- Ajuste manual ---
 st.sidebar.subheader("🧭 Ajuste fino del eje X")
-offset_dias = st.sidebar.slider("Desplazamiento temporal (± días)", -60, 60, 38, 1)
+offset_dias = st.sidebar.slider("Desplazamiento (± días)", -60, 60, 0, 1)
 escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
 
-# ======== SALIDA ========
-OUT_DIR = Path("resultados_clasif")
-OUT_DIR.mkdir(exist_ok=True)
+# --- Autoajuste ---
+autoajuste = st.sidebar.button("⚡ Autoajustar a rango típico (1-mar → 20-jul)")
+
+# ========= SALIDA =========
+OUT_DIR = Path("resultados_clasif"); OUT_DIR.mkdir(exist_ok=True)
 CSV_PATH = OUT_DIR / "hist_patrones.csv"
 
 uploaded = st.file_uploader("📤 Cargar imagen (.png o .jpg)", type=["png", "jpg"])
 
 if uploaded:
-    # --- Leer imagen ---
     file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    st.image(uploaded, caption="📈 Imagen original", use_container_width=True)
 
-    # --- Detección de color ajustable ---
-    lower_blue = np.array([h_min, s_min, v_min])
-    upper_blue = np.array([h_max, 255, 255])
-    mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
+    # ========= DETECCIÓN DE CURVA SEGÚN MODO =========
+    if modo.startswith("Curva azul"):
+        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        lower_blue = np.array([h_min, s_min, v_min])
+        upper_blue = np.array([h_max, 255, 255])
+        mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
 
-    st.image(uploaded, caption="📈 Imagen original analizada", use_container_width=True)
-    st.image(mask, caption="🎨 Máscara azul detectada (curva EMERREL)", use_container_width=True)
+    else:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_blur = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, mask = cv2.threshold(gray_blur, 200, 255, cv2.THRESH_BINARY)
+        mask = cv2.bitwise_not(mask)
+        mask = cv2.GaussianBlur(mask, (1, 7), 0)
+        h, w = mask.shape
+        mask = mask[int(h * 0.25):int(h * 0.9), :]
 
-    # --- Extracción y suavizado de curva ---
+    st.caption(f"Modo de lectura activo: **{modo}**")
+    st.image(mask, caption="🧭 Curva procesada / máscara base", use_container_width=True)
+
+    # ========= EXTRACCIÓN Y SUAVIZADO =========
     curve = np.mean(mask, axis=0)
     curve = np.ravel(curve)
     curve_smooth = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
-    curve_smooth = curve_smooth ** gamma_corr
-    curve_smooth = np.clip(curve_smooth * gain, 0, 1)
+    curve_smooth = np.clip(curve_smooth ** gamma_corr * gain, 0, 1)
 
-    # --- Ajuste de escala y desplazamiento ---
+    # ========= AJUSTE TEMPORAL =========
     total_dias = (fecha_fin - fecha_inicio).days
     dias_reales = int(total_dias * (escala_factor / 100))
     fecha_fin_adj = fecha_inicio + timedelta(days=dias_reales)
     fechas = pd.date_range(start=fecha_inicio, end=fecha_fin_adj, periods=len(curve_smooth))
     fechas = fechas + timedelta(days=offset_dias)
 
-    # --- Detección de picos ---
+    # ========= DETECCIÓN DE PICOS =========
     peaks, props = find_peaks(curve_smooth, height=height_thr, distance=dist_min)
     heights = props.get("peak_heights", [])
     n_picos = len(peaks)
@@ -95,7 +109,16 @@ if uploaded:
     std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
     hmax, hmean = (heights.max() if len(heights) else 0), (np.mean(heights) if len(heights) else 0)
 
-    # --- Clasificación del patrón ---
+    # --- Autoajuste opcional ---
+    if autoajuste and len(peaks) > 1:
+        f1, f2 = fechas[peaks[0]], fechas[peaks[-1]]
+        dur_curva = (f2 - f1).days
+        nueva_escala = (142 / max(dur_curva, 1)) * 100
+        nuevo_offset = (fecha_inicio + timedelta(days=28) - f1).days
+        st.sidebar.success(f"Autoajuste aplicado: Escala {nueva_escala:.0f}%, Offset {nuevo_offset:+d} días")
+        escala_factor, offset_dias = nueva_escala, nuevo_offset
+
+    # ========= CLASIFICACIÓN =========
     if n_picos == 1:
         tipo, desc = "P1", "Emergencia temprana y compacta"
     elif n_picos == 2 and mean_sep < 50:
@@ -105,149 +128,73 @@ if uploaded:
     else:
         tipo, desc = "P3", "Extendida o multimodal"
 
-    # --- Probabilidad ---
     conf = ((hmax - hmean * 0.4) / (hmax + 0.01)) * np.exp(-0.008 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
-    if prob > 0.75:
-        nivel, color_box = "🔵 Alta", "#c8f7c5"
-    elif prob > 0.45:
-        nivel, color_box = "🟠 Media", "#fff3b0"
-    else:
-        nivel, color_box = "🔴 Baja", "#ffcccc"
+    nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
 
-    # --- Visualización del gráfico ---
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(fechas, curve_smooth, color='royalblue', linewidth=2, label="Curva suavizada")
+    # ========= VISUALIZACIÓN =========
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(fechas, curve_smooth, color='royalblue', linewidth=2)
+    ax.fill_between(fechas, curve_smooth, color='lightblue', alpha=0.3)
     if len(peaks):
-        ax.plot(fechas[peaks], curve_smooth[peaks], "ro", label="Picos detectados")
-
-    # Sombras predictiva / posterior al corte
-    ax.axvspan(fechas.min(), fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
-    ax.axvspan(fecha_mayo, fechas.max(), color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
+        ax.plot(fechas[peaks], curve_smooth[peaks], "ro")
+        for p in peaks:
+            ax.text(fechas[p], curve_smooth[p]+0.02, fechas[p].strftime("%d-%b"), rotation=45, fontsize=8)
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
-    ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
-
+    ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4)
     ax.legend(loc='upper right')
-    ax.set_xlabel(f"Fecha calendario ajustada ({fechas.min().strftime('%d-%b')} → {fechas.max().strftime('%d-%b')})")
+    ax.set_xlabel("Fecha calendario ajustada")
     ax.set_ylabel("Intensidad normalizada")
-    ax.set_title(f"Curva detectada — {tipo} (Año {year_ref})")
+    ax.set_title(f"Curva detectada — {tipo} ({nivel}, {prob:.2f})")
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
-    # --- Resultados numéricos ---
-    st.markdown(f"<div style='background-color:{color_box}; padding:10px; border-radius:10px;'>"
-                f"<b>Tipo de patrón:</b> {tipo}<br>"
-                f"<b>Descripción:</b> {desc}<br>"
-                f"<b>Probabilidad:</b> {nivel} ({prob:.2f})<br>"
-                f"<b>N° picos:</b> {n_picos}<br>"
-                f"<b>hmax:</b> {hmax:.2f} | <b>hmean:</b> {hmean:.2f}<br>"
-                f"<b>mean_sep:</b> {mean_sep:.1f} | <b>std_sep:</b> {std_sep:.1f}</div>", 
-                unsafe_allow_html=True)
-
-    # --- Descripción agronómica ---
-    st.subheader("🧩 Descripción del patrón detectado")
-    if len(peaks):
-        fechas_picos = [fechas[p].date() for p in peaks]
-        picos_post_mayo = [f for f in fechas_picos if f > fecha_mayo]
-    else:
-        picos_post_mayo = []
-
-    if tipo == "P1":
-        interpretacion = "Emergencia temprana concentrada (una cohorte dominante antes de mayo)."
-    elif tipo == "P1b":
-        interpretacion = "Emergencia temprana con pequeño repunte luego del 1° de mayo."
-    elif tipo == "P2":
-        interpretacion = "Emergencia bimodal: dos pulsos bien definidos antes y después del 1° de mayo."
-    else:
-        interpretacion = "Emergencia extendida o multimodal: prolongada en el tiempo."
-
-    if picos_post_mayo:
-        fechas_str = ", ".join([f.strftime("%d-%b") for f in picos_post_mayo])
-        st.info(f"📆 Picos posteriores al 1° de mayo: **{fechas_str}**")
-    else:
-        st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
-    st.write(interpretacion)
-
-
-
-    # --- Descripción completa del patrón detectado ---
+    # ========= DESCRIPCIÓN COMPLETA =========
     st.subheader("🌾 Descripción completa del patrón detectado")
 
-    # Caracterización temporal general
     if len(peaks):
         fechas_picos = [fechas[p].date() for p in peaks]
         primer_pico, ultimo_pico = fechas_picos[0], fechas_picos[-1]
         duracion = (ultimo_pico - primer_pico).days if len(fechas_picos) > 1 else 0
         picos_pre = [f for f in fechas_picos if f <= fecha_mayo]
         picos_post = [f for f in fechas_picos if f > fecha_mayo]
-
         resumen_tiempo = (
             f"La curva presenta **{n_picos} picos principales** entre "
             f"**{primer_pico.strftime('%d-%b')}** y **{ultimo_pico.strftime('%d-%b')}**, "
             f"con una duración efectiva aproximada de **{duracion} días**."
         )
-        if len(picos_pre) > 0 and len(picos_post) > 0:
-            resumen_tiempo += " Se observan pulsos tanto **antes como después del 1° de mayo**, lo que sugiere continuidad de emergencia."
-        elif len(picos_pre) > 0:
-            resumen_tiempo += " La emergencia se concentró **antes del 1° de mayo**, indicando un patrón temprano."
+        if picos_pre and picos_post:
+            resumen_tiempo += " Se observan pulsos tanto **antes como después del 1° de mayo**, indicando continuidad de emergencia."
+        elif picos_pre:
+            resumen_tiempo += " La emergencia se concentró **antes del 1° de mayo**."
         else:
-            resumen_tiempo += " La emergencia principal ocurrió **después del 1° de mayo**, sugiriendo un patrón tardío o extendido."
+            resumen_tiempo += " La emergencia principal ocurrió **después del 1° de mayo**."
     else:
-        resumen_tiempo = "No se detectaron picos claros de emergencia en la curva analizada."
+        resumen_tiempo = "No se detectaron picos definidos en la curva."
 
-    # Caracterización del tipo de patrón
-    if tipo == "P1":
-        caracteristicas = (
-            "El patrón **P1 (temprano y compacto)** se asocia con emergencias rápidas y concentradas "
-            "en el inicio del ciclo, generalmente bajo condiciones favorables de humedad y temperatura. "
-            "Suele implicar una alta proporción de cohortes iniciales y escasa persistencia posterior."
-        )
-    elif tipo == "P1b":
-        caracteristicas = (
-            "El patrón **P1b (temprano con repunte corto)** refleja una emergencia principal temprana, "
-            "seguida de un leve rebrote posterior. Esta dinámica puede vincularse a lluvias o enfriamientos intermitentes."
-        )
-    elif tipo == "P2":
-        caracteristicas = (
-            "El patrón **P2 (bimodal)** indica dos pulsos de emergencia bien definidos, separados por un período "
-            "de baja actividad. El segundo pulso suele responder a una recarga hídrica otoñal o un cambio térmico marcado."
-        )
-    else:
-        caracteristicas = (
-            "El patrón **P3 (extendido o multimodal)** refleja una emergencia prolongada en el tiempo, "
-            "caracterizada por múltiples cohortes. Sugiere alta plasticidad ecológica y potencial de infestación sostenida."
-        )
+    # Caracterización según tipo
+    caracteristicas = {
+        "P1": "Emergencia rápida y concentrada, asociada a condiciones tempranas favorables.",
+        "P1b": "Emergencia principal temprana con leve repunte posterior.",
+        "P2": "Dos pulsos de emergencia separados: bimodal, con reactivación otoñal.",
+        "P3": "Emergencia prolongada y sostenida en el tiempo, con múltiples cohortes."
+    }[tipo]
 
-    # Intensidad y probabilidad
-    if prob >= 0.75:
-        nivel_texto = "La **probabilidad de clasificación es alta**, lo que indica una correspondencia robusta entre la curva detectada y los patrones históricos conocidos."
-    elif prob >= 0.45:
-        nivel_texto = "La **probabilidad es moderada**, lo que sugiere una coincidencia parcial con patrones históricos; se recomienda verificar la coherencia temporal del eje X."
-    else:
-        nivel_texto = "La **probabilidad es baja**, posiblemente por distorsión del eje temporal, ruido en la imagen o baja diferenciación de picos."
+    nivel_texto = (
+        "La **probabilidad de clasificación es alta**, con buena correspondencia histórica."
+        if prob >= 0.75 else
+        "La **probabilidad es moderada**, posible sesgo temporal; revisar eje X."
+        if prob >= 0.45 else
+        "La **probabilidad es baja**, posible ruido o desfase en la curva."
+    )
 
-    # Síntesis final
     descripcion_final = (
         f"{resumen_tiempo}\n\n"
-        f"{caracteristicas}\n\n"
+        f"El patrón identificado es **{tipo}**: {caracteristicas}\n\n"
         f"{nivel_texto}\n\n"
-        "📊 **Interpretación agronómica:** este patrón ofrece una idea del riesgo temporal de emergencia. "
-        "En contextos de manejo, los patrones P1 y P1b tienden a requerir intervenciones tempranas, "
-        "mientras que P2 y P3 implican estrategias de control prolongadas o residuales."
+        "📊 **Interpretación agronómica:**\n"
+        "Los patrones P1–P1b requieren control temprano, mientras que P2–P3 "
+        "demandan manejo residual o prolongado durante el otoño-invierno."
     )
 
     st.markdown(descripcion_final)
-
-
-   
-    # --- Registro CSV ---
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row = [now, uploaded.name, tipo, prob, nivel, n_picos]
-    file_exists = CSV_PATH.exists()
-    with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["Fecha análisis", "Archivo", "Tipo patrón", "Probabilidad", "Nivel", "N° picos"])
-        writer.writerow(row)
-
-    st.success(f"📄 Registro guardado en **{CSV_PATH}**")
