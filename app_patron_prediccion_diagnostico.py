@@ -87,6 +87,18 @@ if uploaded:
     st.caption(f"Modo de lectura activo: **{modo}**")
     st.image(mask, caption="🧭 Curva procesada / máscara base", use_container_width=True)
 
+
+    # --- Stretch horizontal (resampleo proporcional) ---
+    from scipy.ndimage import zoom
+    
+    if stretch_factor != 100:
+        zoom_factor = stretch_factor / 100.0
+        curve_smooth = zoom(curve_smooth, zoom_factor)
+        # Recalcular fechas para que coincidan con la nueva longitud
+        fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
+        fechas = fechas + timedelta(days=offset_dias)
+
+    
     # ========= EXTRACCIÓN Y SUAVIZADO =========
     curve = np.mean(mask, axis=0)
     curve = np.ravel(curve)
