@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador unificado (curva azul + áreas de color + stretch dinámico)
+# 🌾 PREDWEEM — Clasificador unificado (curva azul + áreas de color)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -8,16 +8,14 @@ from scipy.signal import find_peaks
 from datetime import datetime, timedelta, date
 from pathlib import Path
 import pandas as pd
-from scipy.ndimage import zoom
 
 # ========= CONFIGURACIÓN =========
 st.set_page_config(page_title="Clasificador PREDWEEM — Unificado", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Modo adaptable con ajuste fino y extensión dinámica")
+st.title("🌾 Clasificador PREDWEEM — Detección adaptable con ajuste fino de eje temporal")
 
 st.markdown("""
 Compatible con gráficos tipo **EMERREL (curva azul)** y **áreas multicolor (verde/amarillo/rojo)**.  
-Incluye **ajuste fino del eje X**, desplazamiento, y control de **stretch horizontal (%)**  
-para alinear exactamente la curva con las fechas calendario observadas.
+Permite ajustar el eje X manualmente y generar una descripción agronómica completa del patrón detectado.
 """)
 
 # ========= SIDEBAR =========
@@ -56,14 +54,6 @@ st.sidebar.subheader("🧭 Ajuste fino del eje X")
 offset_dias = st.sidebar.slider("Desplazamiento (± días)", -60, 60, 0, 1)
 escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
 
-# --- Stretch horizontal ---
-st.sidebar.subheader("🧮 Extensión horizontal de curva")
-stretch_factor = st.sidebar.slider(
-    "Factor de extensión horizontal (%)",
-    50, 200, 100, 5,
-    help="Permite estirar o comprimir la curva detectada para alinearla al eje de fechas."
-)
-
 # --- Autoajuste ---
 autoajuste = st.sidebar.button("⚡ Autoajustar a rango típico (1-mar → 20-jul)")
 
@@ -84,6 +74,7 @@ if uploaded:
         lower_blue = np.array([h_min, s_min, v_min])
         upper_blue = np.array([h_max, 255, 255])
         mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
+
     else:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray_blur = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -102,11 +93,6 @@ if uploaded:
     curve_smooth = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
     curve_smooth = np.clip(curve_smooth ** gamma_corr * gain, 0, 1)
-
-    # --- Stretch horizontal (resampleo proporcional) ---
-    if stretch_factor != 100:
-        zoom_factor = stretch_factor / 100.0
-        curve_smooth = zoom(curve_smooth, zoom_factor)
 
     # ========= AJUSTE TEMPORAL =========
     total_dias = (fecha_fin - fecha_inicio).days
@@ -175,7 +161,7 @@ if uploaded:
         resumen_tiempo = (
             f"La curva presenta **{n_picos} picos principales** entre "
             f"**{primer_pico.strftime('%d-%b')}** y **{ultimo_pico.strftime('%d-%b')}**, "
-            f"con una duración efectiva de **{duracion} días**."
+            f"con una duración efectiva aproximada de **{duracion} días**."
         )
         if picos_pre and picos_post:
             resumen_tiempo += " Se observan pulsos tanto **antes como después del 1° de mayo**, indicando continuidad de emergencia."
