@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo de patrón histórico (ajuste en tiempo real)
+# 🌾 PREDWEEM — Clasificador interactivo con eje calendario
 import streamlit as st
 import cv2, os, csv
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from pathlib import Path
+import pandas as pd
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Interactivo", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Interactivo y Diagnóstico")
+st.set_page_config(page_title="Clasificador PREDWEEM — Eje calendario", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Modo Interactivo con eje calendario")
 
 st.markdown("""
 Esta versión permite ajustar los parámetros de detección en tiempo real
-para verificar que la curva extraída coincida con la forma de la emergencia (EMERREL).
+y muestra el eje X en **fecha calendario (1 Ene – 31 Dic)**.
 """)
 
 # ======== SIDEBAR DE PARÁMETROS ========
@@ -34,7 +35,13 @@ dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 20, 5)
 gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
 gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 
-# Carpeta de salida
+# --- Configuración temporal ---
+st.sidebar.subheader("📅 Escala temporal")
+year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
+fecha_inicio = date(year_ref, 1, 1)
+fecha_fin = date(year_ref, 12, 31)
+
+# ======== SALIDA ========
 OUT_DIR = Path("resultados_clasif")
 OUT_DIR.mkdir(exist_ok=True)
 CSV_PATH = OUT_DIR / "hist_patrones.csv"
@@ -58,15 +65,15 @@ if uploaded:
     # --- Extracción y suavizado de curva ---
     curve = np.mean(mask, axis=0)
     curve = np.ravel(curve)
-    st.line_chart(curve)
-    st.caption("🔍 Curva original extraída (antes de suavizado)")
-
     curve_smooth = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Detección de picos interactiva ---
+    # Generar eje de fechas calendario proporcional al largo de la curva
+    fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
+
+    # --- Detección de picos ---
     peaks, props = find_peaks(curve_smooth, height=height_thr, distance=dist_min)
     heights = props.get("peak_heights", [])
     n_picos = len(peaks)
@@ -84,7 +91,7 @@ if uploaded:
     else:
         tipo, desc = "P3", "Extendida o multimodal"
 
-    # --- Probabilidad ajustada ---
+    # --- Probabilidad ---
     conf = ((hmax - hmean * 0.4) / (hmax + 0.01)) * np.exp(-0.008 * std_sep)
     prob = round(max(0.0, min(1.0, conf)), 3)
 
@@ -95,23 +102,24 @@ if uploaded:
     else:
         nivel, color_box = "🔴 Baja", "#ffcccc"
 
-    # --- Visualización de picos ---
-    fig, ax = plt.subplots(figsize=(9, 3))
-    ax.plot(curve_smooth, color='royalblue', linewidth=2, label="Curva suavizada")
+    # --- Visualización de picos con eje calendario ---
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(fechas, curve_smooth, color='royalblue', linewidth=2, label="Curva suavizada")
     if len(peaks):
-        ax.plot(peaks, curve_smooth[peaks], "ro", label="Picos detectados")
+        ax.plot(fechas[peaks], curve_smooth[peaks], "ro", label="Picos detectados")
 
-    # Línea del 1 de mayo (JD≈121)
-    jd_mayo = int(len(curve_smooth) * 121 / 300)
-    ax.axvline(jd_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo (JD≈121)")
+    # Línea del 1 de mayo
+    fecha_mayo = date(year_ref, 5, 1)
+    ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
     ax.legend(loc='upper right')
-    ax.set_xlabel("Eje temporal relativo (0–300)")
+    ax.set_xlabel("Fecha calendario")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo}")
+    plt.xticks(rotation=45)
     st.pyplot(fig)
 
-    # --- Mostrar resultados ---
+    # --- Resultados ---
     st.markdown(f"<div style='background-color:{color_box}; padding:10px; border-radius:10px;'>"
                 f"<b>Tipo de patrón:</b> {tipo}<br>"
                 f"<b>Descripción:</b> {desc}<br>"
@@ -138,4 +146,5 @@ if uploaded:
         if len(df) > 0:
             st.subheader("📚 Historial de clasificaciones")
             st.dataframe(df)
+
 
