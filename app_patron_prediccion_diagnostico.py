@@ -118,37 +118,49 @@ if uploaded:
         st.sidebar.success(f"Autoajuste aplicado: Escala {nueva_escala:.0f}%, Offset {nuevo_offset:+d} días")
         escala_factor, offset_dias = nueva_escala, nuevo_offset
 
-    # ========= CLASIFICACIÓN =========
-    if n_picos == 1:
-        tipo, desc = "P1", "Emergencia temprana y compacta"
-    elif n_picos == 2 and mean_sep < 50:
-        tipo, desc = "P1b", "Temprana con repunte corto"
-    elif n_picos == 2:
-        tipo, desc = "P2", "Bimodal"
+        # ========= CLASIFICACIÓN GLOBAL (solo 1-feb → 1-may) =========
+    fecha_febrero = date(year_ref, 2, 1)
+    fecha_mayo = date(year_ref, 5, 1)
+    
+    # Creamos un DataFrame temporal para facilitar el recorte
+    df_curva = pd.DataFrame({"fecha": fechas, "valor": curve_smooth})
+    mask_periodo = (df_curva["fecha"].dt.date >= fecha_febrero) & (df_curva["fecha"].dt.date <= fecha_mayo)
+    df_periodo = df_curva.loc[mask_periodo].reset_index(drop=True)
+    
+    if len(df_periodo) > 10:
+        # Solo se clasifica usando el tramo 1-feb → 1-may
+        tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean = clasificar(
+            df_periodo["valor"].to_numpy(), height_thr, dist_min
+        )
+        fechas_sub = df_periodo["fecha"].to_numpy()
+        nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
     else:
-        tipo, desc = "P3", "Extendida o multimodal"
-
-    conf = ((hmax - hmean * 0.4) / (hmax + 0.01)) * np.exp(-0.008 * std_sep)
-    prob = round(max(0.0, min(1.0, conf)), 3)
-    nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
-
+        tipo, prob, nivel = "-", 0.0, "—"
+        peaks, heights, mean_sep, std_sep, hmax, hmean = [], [], 0, 0, 0, 0
+        fechas_sub = []
+    
     # ========= VISUALIZACIÓN =========
     fig, ax = plt.subplots(figsize=(11, 4))
-    ax.plot(fechas, curve_smooth, color='royalblue', linewidth=2)
-    ax.fill_between(fechas, curve_smooth, color='lightblue', alpha=0.3)
+    ax.plot(fechas, curve_smooth, color='lightgray', linewidth=1.5, label="Curva completa")
+    ax.plot(df_periodo["fecha"], df_periodo["valor"], color='royalblue', linewidth=2, label="Tramo 1-feb → 1-may")
+    
     if len(peaks):
-        ax.plot(fechas[peaks], curve_smooth[peaks], "ro")
+        ax.plot(fechas_sub[peaks], df_periodo["valor"].iloc[peaks], "ro")
         for p in peaks:
-            ax.text(fechas[p], curve_smooth[p]+0.02, fechas[p].strftime("%d-%b"), rotation=45, fontsize=8)
-    ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
+            ax.text(fechas_sub[p], df_periodo["valor"].iloc[p]+0.02,
+                    fechas_sub[p].strftime("%d-%b"), rotation=45, fontsize=8)
+    
+    ax.axvline(fecha_febrero, color='green', linestyle='--', linewidth=1, label="Inicio (1-feb)")
+    ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="Fin (1-may)")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4)
     ax.legend(loc='upper right')
     ax.set_xlabel("Fecha calendario ajustada")
     ax.set_ylabel("Intensidad normalizada")
-    ax.set_title(f"Curva detectada — {tipo} ({nivel}, {prob:.2f})")
+    ax.set_title(f"Clasificación (solo 1-feb→1-may): {tipo} ({nivel}, {prob:.2f})")
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
+  
     # ========= DESCRIPCIÓN COMPLETA =========
     st.subheader("🌾 Descripción completa del patrón detectado")
 
