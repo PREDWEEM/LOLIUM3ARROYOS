@@ -1,164 +1,81 @@
-# -*- coding: utf-8 -*-
-# ===============================================================
-# 🌾 PREDWEEM — Diagnóstico de patrón histórico de emergencia
-# ===============================================================
 
+# -*- coding: utf-8 -*-
+# 🌾 PREDWEEM — Clasificador automático de patrones históricos (con registro CSV)
 import streamlit as st
-import pandas as pd
+import cv2, os, csv
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
 from datetime import datetime
 
-st.set_page_config(page_title="🌾 PREDWEEM — Patrón histórico", layout="wide")
+st.set_page_config(page_title="Clasificador de patrones PREDWEEM", layout="wide")
+st.title("🌾 Clasificación automática del patrón histórico (con probabilidad y registro)")
 
-st.title("🌾 PREDWEEM — Diagnóstico del patrón histórico de emergencia")
-st.markdown("""
-Esta herramienta analiza los resultados del modelo **PREDWEEM** (archivo CSV con columnas `Fecha`, `Julian_days`, `Nivel de EMERREL`, `EMEAC (%)`)
-y predice con alta precisión el **patrón histórico de emergencia** (P1, P1b, P2 o P3),
-utilizando la información disponible hasta el **1 de mayo (JD≈121)**.
-""")
+uploaded = st.file_uploader("📤 Cargar imagen (.png, .jpg)", type=["png", "jpg"])
 
-# ===============================================================
-# 📂 CARGA DE ARCHIVO
-# ===============================================================
-uploaded = st.file_uploader("📤 Cargá el archivo CSV de resultados de emergencia PREDWEEM", type=["csv"])
-if uploaded is None:
-    st.info("Esperando archivo... Subí tu CSV con los resultados del modelo.")
-    st.stop()
+CSV_PATH = "hist_patrones.csv"
 
-# ===============================================================
-# 🧾 LECTURA Y PROCESAMIENTO
-# ===============================================================
-df = pd.read_csv(uploaded)
-df.columns = [c.strip() for c in df.columns]
-df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-col_ac = [c for c in df.columns if "EMEAC" in c.upper()][0]
-df["Emer_AC"] = pd.to_numeric(df[col_ac], errors="coerce")
-if df["Emer_AC"].max() > 1.01:
-    df["Emer_AC"] /= 100.0
-df["Emer_Rel"] = df["Emer_AC"].diff().fillna(0).clip(lower=0)
-df["JD"] = df["Fecha"].dt.dayofyear
+if uploaded:
+    # --- Leer imagen ---
+    file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-# ===============================================================
-# 📆 CORTE AL 1 DE MAYO
-# ===============================================================
-fecha_corte = datetime(df["Fecha"].dt.year.iloc[0], 5, 1)
-jd_corte = 121
-df_corte = df[df["JD"] <= jd_corte]
+    # --- Extraer canal azul ---
+    blue = img[:,:,0].astype(float)
+    curve = np.mean(blue, axis=0)
+    curve = (curve.max() - curve) / (curve.max() - curve.min())
+    curve = (curve - curve.min()) / (curve.max() - curve.min())
 
-st.subheader(f"📅 Análisis hasta el 1 de mayo (JD {jd_corte})")
-st.write(f"Período analizado: {df_corte['Fecha'].min().date()} → {df_corte['Fecha'].max().date()}")
-st.write(f"Días considerados: {len(df_corte)}")
+    # --- Detectar picos ---
+    peaks, props = find_peaks(curve, height=0.2, distance=15)
+    heights = props.get("peak_heights", [])
+    n_picos = len(peaks)
+    mean_sep = np.mean(np.diff(peaks)) if n_picos > 1 else 0
+    std_sep = np.std(np.diff(peaks)) if n_picos > 2 else 0
+    hmax, hmean = heights.max() if len(heights) else 0, np.mean(heights) if len(heights) else 0
 
-# ===============================================================
-# 🧠 CLASIFICADOR DE PATRONES
-# ===============================================================
-def normalize(v): s = v.sum(); return v / s if s > 0 else v
+    # --- Clasificación ---
+    if n_picos == 1:
+        tipo, desc = "P1", "Emergencia temprana y compacta"
+    elif n_picos == 2 and mean_sep < 30:
+        tipo, desc = "P1b", "Temprana con repunte corto"
+    elif n_picos == 2:
+        tipo, desc = "P2", "Bimodal"
+    else:
+        tipo, desc = "P3", "Extendida o multimodal"
 
-def features(df):
-    jd, rel = df["JD"].values, df["Emer_Rel"].values
-    thr = 0.3 * (rel.max() if len(rel) else 0)
-    peaks = np.where((rel[1:-1] > rel[:-2]) & (rel[1:-1] > rel[2:]) & (rel[1:-1] >= thr))[0] + 1
-    n = len(peaks)
-    jd50 = np.interp(0.5, df["Emer_AC"], jd) if df["Emer_AC"].max() > 0.5 else np.nan
-    late = normalize(rel)[jd > 160].sum()
-    return dict(n_peaks=n, jd50=float(jd50), late_share=float(late))
+    # --- Probabilidad ---
+    conf = ((hmax - hmean) / (hmax + 0.01)) * np.exp(-0.02 * std_sep)
+    prob = round(max(0.0, min(1.0, conf)), 3)
+    if prob > 0.75:
+        nivel = "🔵 Alta"
+    elif prob > 0.45:
+        nivel = "🟠 Media"
+    else:
+        nivel = "🔴 Baja"
 
-def classify(f):
-    n, jd50, late = f["n_peaks"], f["jd50"], f["late_share"]
-    if n >= 3 or late > 0.20: return "P3"
-    if n == 2 and jd50 < 120: return "P2"
-    if n >= 2 or late > 0.05: return "P1b"
-    return "P1"
+    # --- Mostrar resultados ---
+    st.image(uploaded, caption="Imagen analizada")
+    fig, ax = plt.subplots()
+    ax.plot(curve, color='royalblue', linewidth=2)
+    if len(peaks):
+        ax.plot(peaks, curve[peaks], "ro")
+    ax.set_title(f"{tipo} — {desc}")
+    ax.set_xlabel("Eje temporal relativo")
+    ax.set_ylabel("EMERREL (normalizado)")
+    st.pyplot(fig)
 
-feat = features(df_corte)
-patron_pred = classify(feat)
+    st.success(f"✅ Patrón: **{tipo}** ({desc})")
+    st.info(f"🔍 Probabilidad: **{nivel} ({prob:.2f})**  |  Nº picos: {n_picos}")
 
-# ===============================================================
-# 📈 PATRONES CANÓNICOS + NOMBRES AGRONÓMICOS
-# ===============================================================
-JD = np.arange(1, 301)
-def gaussian(x, mu, sigma, amp): return amp * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-def normalize_shape(v): return v / v.sum()
+    # --- Guardar registro CSV ---
+    row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uploaded.name, tipo, prob, nivel, n_picos]
+    file_exists = os.path.isfile(CSV_PATH)
 
-shape_P1  = normalize_shape(gaussian(JD, 70, 10, 1.0))
-shape_P1b = normalize_shape(gaussian(JD, 85, 12, 0.85) + gaussian(JD, 200, 25, 0.25))
-shape_P2  = normalize_shape(gaussian(JD, 60, 6, 1.0) + gaussian(JD, 140, 12, 0.3))
-shape_P3  = normalize_shape(gaussian(JD, 100, 15, 0.35) + gaussian(JD, 160, 20, 0.30)
-                            + gaussian(JD, 220, 22, 0.25) + gaussian(JD, 270, 10, 0.20))
+    with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Fecha análisis", "Archivo", "Tipo patrón", "Probabilidad", "Nivel", "N° picos"])
+        writer.writerow(row)
 
-patterns = {"P1": shape_P1, "P1b": shape_P1b, "P2": shape_P2, "P3": shape_P3}
-names = {
-    "P1":  "Temprano compacto regular",
-    "P1b": "Temprano con repunte",
-    "P2":  "Bimodal (dos cohortes)",
-    "P3":  "Extendido o multimodal"
-}
-colors = {"P1": "tab:blue", "P1b": "tab:orange", "P2": "tab:green", "P3": "tab:red"}
-
-# ===============================================================
-# 🔢 PROBABILIDAD DE COINCIDENCIA
-# ===============================================================
-obs = np.interp(JD, df["JD"], df["Emer_AC"], left=0, right=1)
-probs = {}
-for k, v in patterns.items():
-    ref = np.cumsum(v)
-    corr = np.corrcoef(obs, ref)[0, 1]
-    probs[k] = max(0, corr)
-total = sum(probs.values())
-if total > 0:
-    for k in probs:
-        probs[k] /= total
-ranking = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-prob_df = pd.DataFrame(ranking, columns=["Patrón", "Probabilidad"])
-prob_df["Nombre agronómico"] = prob_df["Patrón"].map(names)
-
-# ===============================================================
-# 🎯 RESULTADOS
-# ===============================================================
-st.success(f"**Patrón estimado al 1 de mayo:** {patron_pred} — {names[patron_pred]}")
-st.json(feat)
-st.markdown("### 🔢 Ranking de coincidencia con patrones históricos:")
-st.dataframe(prob_df.style.format({"Probabilidad": "{:.2f}"}))
-
-# ===============================================================
-# 📊 GRAFICO COMPARATIVO
-# ===============================================================
-fig, ax = plt.subplots(figsize=(10,5))
-ax.plot(df["JD"], df["Emer_AC"], color="black", lw=2.5, label="Emergencia acumulada (real)")
-ax.bar(df["JD"], df["Emer_Rel"], color="gray", alpha=0.3, label="Emergencia diaria")
-ax.axvline(jd_corte, color="orange", ls="--", lw=2, label="Diagnóstico (1 mayo)")
-
-# Superposición de patrones históricos
-for k, v in patterns.items():
-    lw = 3.5 if k == patron_pred else 1.5
-    alpha = 0.95 if k == patron_pred else 0.4
-    ax.plot(JD, np.cumsum(v), color=colors[k], lw=lw, alpha=alpha,
-            label=f"{k} — {names[k]}{' ← estimado' if k == patron_pred else ''}")
-
-ax.set_xlim(0, min(300, df["JD"].max() + 10))
-ax.set_ylim(0, 1.05)
-ax.set_xlabel("Día Juliano (JD)")
-ax.set_ylabel("Emergencia acumulada")
-ax.set_title(f"Patrón estimado: {patron_pred} — {names[patron_pred]}")
-ax.legend(loc="upper left", fontsize=8)
-ax.grid(True, ls="--", alpha=0.4)
-st.pyplot(fig)
-
-# ===============================================================
-# 📤 EXPORTACIÓN
-# ===============================================================
-resumen = pd.DataFrame([{
-    "Fecha_corte": fecha_corte.date(),
-    "JD_corte": jd_corte,
-    "Patron_predicho": patron_pred,
-    "Nombre_agronomico": names[patron_pred],
-    **feat
-}])
-csv_out = resumen.to_csv(index=False).encode("utf-8")
-st.download_button("💾 Descargar resumen de diagnóstico", data=csv_out,
-                   file_name="prediccion_patron_1mayo.csv", mime="text/csv")
-
-st.caption("Versión PREDWEEM v4.0 — Diagnóstico de patrones fenológicos con ranking y énfasis visual en el patrón estimado.")
-
-
+    st.success(f"📄 Registro guardado en **{CSV_PATH}**")
