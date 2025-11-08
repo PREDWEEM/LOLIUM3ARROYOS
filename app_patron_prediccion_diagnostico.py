@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustado (1-feb → 19-ago)
+# 🌾 PREDWEEM — Clasificador interactivo con eje calendario ajustado (1-feb → 20-jul)
 import streamlit as st
 import cv2, os, csv
 import numpy as np
@@ -10,12 +10,13 @@ from pathlib import Path
 import pandas as pd
 
 # ======== CONFIGURACIÓN STREAMLIT ========
-st.set_page_config(page_title="Clasificador PREDWEEM — Febrero a Agosto", layout="wide")
-st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (1 Feb – 19 Ago)")
+st.set_page_config(page_title="Clasificador PREDWEEM — Febrero a Julio", layout="wide")
+st.title("🌾 Clasificador de patrón histórico — Modo Interactivo (1 Feb – 20 Jul)")
 
 st.markdown("""
-Esta versión ajusta el eje X a **1 de febrero – 19 de agosto** (período de emergencia invernal),
-detecta los picos relativos al **1 de mayo** y produce una **descripción agronómica automática**.
+Versión ajustada al rango **1 de febrero – 20 de julio**, correspondiente al ciclo de emergencia real.
+Detecta los picos de emergencia relativos al **1 de mayo**, calcula la probabilidad de clasificación
+y muestra una **descripción agronómica automática** del patrón detectado.
 """)
 
 # ======== SIDEBAR DE PARÁMETROS ========
@@ -39,7 +40,7 @@ gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
 st.sidebar.subheader("📅 Escala temporal")
 year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
 fecha_inicio = date(year_ref, 2, 1)   # 1 de febrero
-fecha_fin = date(year_ref, 8, 19)     # 19 de agosto
+fecha_fin = date(year_ref, 7, 20)     # 20 de julio
 fecha_mayo = date(year_ref, 5, 1)
 
 # ======== SALIDA ========
@@ -71,7 +72,7 @@ if uploaded:
     curve_smooth = curve_smooth ** gamma_corr
     curve_smooth = np.clip(curve_smooth * gain, 0, 1)
 
-    # --- Escalado fijo de fechas (1-feb → 19-ago) ---
+    # --- Escalado fijo de fechas (1-feb → 20-jul) ---
     fechas = pd.date_range(start=fecha_inicio, end=fecha_fin, periods=len(curve_smooth))
 
     # --- Detección de picos ---
@@ -113,10 +114,11 @@ if uploaded:
     ax.axvspan(fecha_inicio, fecha_mayo, color='lightblue', alpha=0.15, label="Periodo predictivo (≤1 mayo)")
     ax.axvspan(fecha_mayo, fecha_fin, color='lightcoral', alpha=0.15, label="Posterior al corte (≥1 mayo)")
     ax.axvline(fecha_mayo, color='red', linestyle='--', linewidth=1.5, label="1 de mayo")
+    ax.axvline(fecha_fin, color='green', linestyle='--', linewidth=1.2, label="Último pico (20-jul)")
     ax.axhline(height_thr, color='gray', linestyle='--', alpha=0.4, label=f"Umbral={height_thr:.2f}")
 
     ax.legend(loc='upper right')
-    ax.set_xlabel("Fecha calendario (1-Feb → 19-Ago)")
+    ax.set_xlabel("Fecha calendario (1-Feb → 20-Jul)")
     ax.set_ylabel("Intensidad normalizada")
     ax.set_title(f"Curva detectada — {tipo} (Año {year_ref})")
     plt.xticks(rotation=45)
