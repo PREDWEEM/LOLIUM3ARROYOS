@@ -168,6 +168,78 @@ if uploaded:
         st.info("📆 No se detectaron picos posteriores al 1° de mayo.")
     st.write(interpretacion)
 
+
+
+    # --- Descripción completa del patrón detectado ---
+    st.subheader("🌾 Descripción completa del patrón detectado")
+
+    # Caracterización temporal general
+    if len(peaks):
+        fechas_picos = [fechas[p].date() for p in peaks]
+        primer_pico, ultimo_pico = fechas_picos[0], fechas_picos[-1]
+        duracion = (ultimo_pico - primer_pico).days if len(fechas_picos) > 1 else 0
+        picos_pre = [f for f in fechas_picos if f <= fecha_mayo]
+        picos_post = [f for f in fechas_picos if f > fecha_mayo]
+
+        resumen_tiempo = (
+            f"La curva presenta **{n_picos} picos principales** entre "
+            f"**{primer_pico.strftime('%d-%b')}** y **{ultimo_pico.strftime('%d-%b')}**, "
+            f"con una duración efectiva aproximada de **{duracion} días**."
+        )
+        if len(picos_pre) > 0 and len(picos_post) > 0:
+            resumen_tiempo += " Se observan pulsos tanto **antes como después del 1° de mayo**, lo que sugiere continuidad de emergencia."
+        elif len(picos_pre) > 0:
+            resumen_tiempo += " La emergencia se concentró **antes del 1° de mayo**, indicando un patrón temprano."
+        else:
+            resumen_tiempo += " La emergencia principal ocurrió **después del 1° de mayo**, sugiriendo un patrón tardío o extendido."
+    else:
+        resumen_tiempo = "No se detectaron picos claros de emergencia en la curva analizada."
+
+    # Caracterización del tipo de patrón
+    if tipo == "P1":
+        caracteristicas = (
+            "El patrón **P1 (temprano y compacto)** se asocia con emergencias rápidas y concentradas "
+            "en el inicio del ciclo, generalmente bajo condiciones favorables de humedad y temperatura. "
+            "Suele implicar una alta proporción de cohortes iniciales y escasa persistencia posterior."
+        )
+    elif tipo == "P1b":
+        caracteristicas = (
+            "El patrón **P1b (temprano con repunte corto)** refleja una emergencia principal temprana, "
+            "seguida de un leve rebrote posterior. Esta dinámica puede vincularse a lluvias o enfriamientos intermitentes."
+        )
+    elif tipo == "P2":
+        caracteristicas = (
+            "El patrón **P2 (bimodal)** indica dos pulsos de emergencia bien definidos, separados por un período "
+            "de baja actividad. El segundo pulso suele responder a una recarga hídrica otoñal o un cambio térmico marcado."
+        )
+    else:
+        caracteristicas = (
+            "El patrón **P3 (extendido o multimodal)** refleja una emergencia prolongada en el tiempo, "
+            "caracterizada por múltiples cohortes. Sugiere alta plasticidad ecológica y potencial de infestación sostenida."
+        )
+
+    # Intensidad y probabilidad
+    if prob >= 0.75:
+        nivel_texto = "La **probabilidad de clasificación es alta**, lo que indica una correspondencia robusta entre la curva detectada y los patrones históricos conocidos."
+    elif prob >= 0.45:
+        nivel_texto = "La **probabilidad es moderada**, lo que sugiere una coincidencia parcial con patrones históricos; se recomienda verificar la coherencia temporal del eje X."
+    else:
+        nivel_texto = "La **probabilidad es baja**, posiblemente por distorsión del eje temporal, ruido en la imagen o baja diferenciación de picos."
+
+    # Síntesis final
+    descripcion_final = (
+        f"{resumen_tiempo}\n\n"
+        f"{caracteristicas}\n\n"
+        f"{nivel_texto}\n\n"
+        "📊 **Interpretación agronómica:** este patrón ofrece una idea del riesgo temporal de emergencia. "
+        "En contextos de manejo, los patrones P1 y P1b tienden a requerir intervenciones tempranas, "
+        "mientras que P2 y P3 implican estrategias de control prolongadas o residuales."
+    )
+
+    st.markdown(descripcion_final)
+
+
+   
     # --- Registro CSV ---
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [now, uploaded.name, tipo, prob, nivel, n_picos]
