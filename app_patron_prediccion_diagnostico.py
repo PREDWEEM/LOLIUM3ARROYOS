@@ -26,7 +26,7 @@ st.sidebar.subheader("🎨 Detección de color azul (curva EMERREL)")
 h_min = st.sidebar.slider("Hue mínimo (H)", 70, 130, 80)
 h_max = st.sidebar.slider("Hue máximo (H)", 110, 160, 150)
 s_min = st.sidebar.slider("Saturación mínima (S)", 0, 255, 30)
-v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 40)
+v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 160)
 
 # --- Curva y picos ---
 st.sidebar.subheader("📈 Detección de picos")
