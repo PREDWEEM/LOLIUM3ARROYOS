@@ -1,212 +1,135 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador robusto (final) con ventana ≤1 mayo o completa
+# 🌾 PREDWEEM — Clasificador de patrones históricos (modelo base 2008–2012)
 import streamlit as st
-import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt
-from scipy.signal import find_peaks, savgol_filter
-from datetime import datetime
+import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, pickle
 from pathlib import Path
+from scipy.signal import find_peaks
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
-# ========== CONFIGURACIÓN STREAMLIT ==========
-st.set_page_config(page_title="Clasificador PREDWEEM — Versión final", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Versión final con detección adaptativa")
+# ========= CONFIGURACIÓN =========
+st.set_page_config(page_title="PREDWEEM — Clasificador de patrones históricos", layout="wide")
+st.title("🌾 Clasificador de patrones históricos — Entrenamiento y predicción")
 
 st.markdown("""
-Analiza gráficos de **emergencia relativa (curva negra)** con eje X en **días julianos (0–300)**.  
-Detecta el patrón (P1, P1b, P2, P3) según forma y separación temporal.  
-Permite elegir analizar hasta **1° mayo (JD 121)** o el **patrón completo (0–300)**.  
-Genera automáticamente un **CSV resumen** con los resultados.
+Este modelo se entrena con curvas históricas (2008–2012 + `newplot(7)` dentro de **P3**)  
+y permite clasificar nuevas imágenes de emergencia relativa según el **patrón histórico** detectado:
+- 🟦 **P1:** Emergencia rápida y compacta.  
+- 🟩 **P1b:** Emergencia temprana con pequeño repunte posterior.  
+- 🟧 **P2:** Emergencia bimodal (dos pulsos bien separados).  
+- 🟥 **P3:** Emergencia extendida o prolongada.
 """)
 
-# ========= SIDEBAR =========
-st.sidebar.header("⚙️ Parámetros de análisis")
-height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.05, 0.5, 0.22, 0.01)
-dist_min = st.sidebar.slider("Distancia mínima entre picos", 10, 80, 35, 5)
-window_smooth = st.sidebar.slider("Ventana de suavizado", 5, 51, 15, 2)
-poly_order = st.sidebar.slider("Orden del filtro", 1, 3, 2, 1)
-
-st.sidebar.subheader("🕒 Ventana de análisis")
-modo_ventana = st.sidebar.radio(
-    "Rango temporal:",
-    ["≤ 1-mayo (JD 121)", "Patrón completo (0–300)"],
-    index=0
-)
-
-# ========= ARCHIVO SUBIDO =========
-uploaded = st.file_uploader("📤 Cargar imagen (.png o .jpg)", type=["png", "jpg"])
-OUT_DIR = Path("resultados_clasif"); OUT_DIR.mkdir(exist_ok=True)
-CSV_PATH = OUT_DIR / "resumen_clasificaciones.csv"
-
-# ========= CLASIFICADOR PRINCIPAL =========
-def clasificar(curva, x_axis, thr=0.22, min_dist_px=35,
-               prom_thr=0.12, merge_window_days=18):
-    """
-    Clasifica patrón de emergencia con detección global + tardía adaptativa
-    """
-    # --- Global ---
-    peaks_g, props_g = find_peaks(curva, height=thr, distance=min_dist_px, prominence=prom_thr)
-    h_g = props_g.get("peak_heights", np.array([]))
-
-    # --- Tardía (100–121) ---
-    late = (x_axis >= 100) & (x_axis <= 121)
-    peaks_l = np.array([])
-    if np.any(late):
-        ylate = curva[late]
-        if np.nanmax(ylate) > 0:
-            thr_l = max(0.10, 0.35 * float(np.nanmax(ylate)))
-            prom_l = max(0.05, 0.60 * prom_thr)
-            dist_l = max(12, int(min_dist_px * 0.6))
-            idx_off = np.where(late)[0][0]
-            peaks_l0, _ = find_peaks(ylate, height=thr_l, distance=dist_l, prominence=prom_l)
-            peaks_l = peaks_l0 + idx_off
-
-    # --- Unión ---
-    peaks = np.unique(np.concatenate([peaks_g, peaks_l]).astype(int))
-    if peaks.size == 0:
-        return "-", 0.0, np.array([]), np.array([]), 0.0, 0.0, 0.0, 0.0
-
-    heights = curva[peaks]
-
-    # --- Fusión cercana ---
-    px_per_day = len(curva) / (x_axis[-1] - x_axis[0] + 1e-6)
-    merge_px = int(max(3, merge_window_days * px_per_day))
-    keep, i = [], 0
-    while i < len(peaks):
-        j = i + 1; group = [i]
-        while j < len(peaks) and (peaks[j] - peaks[j-1]) <= merge_px:
-            group.append(j); j += 1
-        best = group[np.argmax(heights[group])]; keep.append(best); i = j
-    peaks = peaks[keep]; heights = heights[keep]
-
-    # --- Filtro JD < 30 ---
-    mask_init = x_axis[peaks] > 30
-    peaks = peaks[mask_init]; heights = heights[mask_init]
-    n = len(peaks)
-    if n == 0:
-        return "-", 0.0, np.array([]), np.array([]), 0.0, 0.0, 0.0, 0.0
-
-    # --- Métricas ---
-    jd = x_axis[peaks]
-    sep_days = np.diff(jd) if n > 1 else np.array([0.0])
-    mean_sep = float(np.mean(sep_days)) if n > 1 else 0.0
-    std_sep  = float(np.std (sep_days)) if n > 2 else 0.0
-    hmax  = float(np.max(heights)); hmean = float(np.mean(heights))
-    ratio_minor = float(np.min(heights) / (hmax + 1e-6)) if n > 1 else 0.0
-
-    def area_local(idx, win_days=8):
-        half = int(max(2, win_days * px_per_day))
-        a = max(0, peaks[idx] - half); b = min(len(curva)-1, peaks[idx] + half)
-        return float(np.trapz(curva[a:b+1]))
-    areas = np.array([area_local(i) for i in range(n)])
-    area_ratio_minor = float(np.min(areas) / (np.max(areas) + 1e-6)) if n > 1 else 0.0
-
-    # --- Reglas ---
-    if n == 1:
-        tipo = "P1"
-    elif n == 2:
-        if (mean_sep >= 70) and (max(ratio_minor, area_ratio_minor) >= 0.40):
-            tipo = "P2"
-        else:
-            tipo = "P1b"
-    else:
-        tipo = "P3"
-
-    conf = ((hmax - 0.4 * hmean) / (hmax + 1e-6)) * np.exp(-0.004 * std_sep)
-    prob = float(np.clip(conf, 0.0, 1.0))
-    return tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean
-
-
-# ========= PROCESAMIENTO DE IMAGEN =========
-if uploaded:
-    fname = uploaded.name
-    file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    st.image(uploaded, caption=f"📈 Imagen original: {fname}", use_container_width=True)
-
+# ========= FUNCIONES AUXILIARES =========
+def extraer_curva(path_img):
+    """Extrae la curva negra principal de una figura de emergencia (eje X: días julianos)."""
+    img = cv2.imread(str(path_img))
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    crop_left, crop_top, crop_bottom = int(w*0.08), int(h*0.10), int(h*0.05)
-    gray = gray[crop_top:h-crop_bottom, crop_left:w]; h, w = gray.shape
-    gray_inv = 255 - gray
-    gray_norm = cv2.GaussianBlur(gray_inv, (3,3), 0).astype(float)/255.0
-
-    # Seguimiento robusto
-    curve_y = []
-    for i in range(w):
-        col = gray_norm[:, i]
-        if np.count_nonzero(col > 0.25) < h * 0.05:
-            curve_y.append(np.nan)
+    gray = gray[int(h*0.1):int(h*0.95), int(w*0.08):]  # recorte margen
+    inv = 255 - gray
+    inv = cv2.GaussianBlur(inv, (3,3), 0)
+    y_curve = []
+    for i in range(inv.shape[1]):
+        col = inv[:, i]
+        if np.count_nonzero(col > 30) < inv.shape[0]*0.05:
+            y_curve.append(np.nan)
             continue
         y_pos = np.argmax(col)
-        curve_y.append(h - y_pos)
-    curve_y = np.array(curve_y)
-    curve_y = pd.Series(curve_y).interpolate(limit_direction="both").to_numpy()
-    y_norm = (curve_y - np.nanmin(curve_y)) / (np.nanmax(curve_y) - np.nanmin(curve_y) + 1e-6)
+        y_curve.append(inv.shape[0] - y_pos)
+    y_curve = pd.Series(y_curve).interpolate(limit_direction="both").to_numpy()
+    y_norm = (y_curve - np.min(y_curve)) / (np.max(y_curve) - np.min(y_curve) + 1e-6)
+    x_jd = np.linspace(0, 300, len(y_norm))
+    return x_jd, y_norm
 
-    x_julian = np.linspace(0, 300, len(y_norm))
-    corte = 121 if modo_ventana.startswith("≤ 1-mayo") else 300
-    mask_corte = x_julian <= corte
-    x_sub, y_sub = x_julian[mask_corte], y_norm[mask_corte]
+def extraer_features(x, y):
+    """Extrae descriptores numéricos de la curva."""
+    y_smooth = pd.Series(y).rolling(window=7, min_periods=1, center=True).mean()
+    peaks, props = find_peaks(y_smooth, height=0.1, distance=8)
+    h = props.get("peak_heights", [])
+    n_peaks = len(peaks)
+    sep = np.diff(x[peaks]) if n_peaks > 1 else [0]
+    dur = x[np.nanargmax(y)] - x[np.nanargmin(y)]
+    features = {
+        "n_peaks": n_peaks,
+        "mean_sep": np.mean(sep) if n_peaks>1 else 0,
+        "std_sep": np.std(sep) if n_peaks>1 else 0,
+        "max_h": np.max(h) if n_peaks>0 else 0,
+        "mean_h": np.mean(h) if n_peaks>0 else 0,
+        "first_peak": x[peaks[0]] if n_peaks>0 else 0,
+        "last_peak": x[peaks[-1]] if n_peaks>0 else 0,
+        "span": dur,
+    }
+    return np.array(list(features.values())), features.keys()
 
-    # Suavizado seguro
-    win = max(7, min(window_smooth, len(y_sub) - (1 - len(y_sub) % 2)))
-    if win % 2 == 0: win += 1
-    y_smooth = savgol_filter(y_sub, win, poly_order)
+# ========= DATOS HISTÓRICOS =========
+DATASET = {
+    "2008.png": "P1b",
+    "2009.png": "P2",
+    "2010.png": "P3",
+    "2011.png": "P1b",
+    "2012.png": "P1",
+    "newplot (7).png": "P3"
+}
 
-    tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean = clasificar(
-        y_smooth, x_sub, thr=height_thr, min_dist_px=dist_min,
-        prom_thr=0.12, merge_window_days=18
-    )
-    nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
+modelo_path = Path("modelo_patrones.pkl")
 
-    # ========= GRAFICAR =========
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(x_julian, y_norm, color="lightgray", lw=1.2, label="Curva completa (0–300)")
-    ax.plot(x_sub, y_smooth, color="royalblue", lw=2, label="Tramo analizado")
-    if len(peaks):
-        ax.plot(x_sub[peaks], y_smooth[peaks], "ro", label="Picos detectados")
-        for p in peaks:
-            ax.text(x_sub[p], min(1.02, y_smooth[p] + 0.03), f"{x_sub[p]:.0f}", fontsize=8, rotation=45, ha="center")
-    ax.axvline(121, color="red", linestyle="--", lw=1.2, label="1° mayo (JD 121)")
-    ax.set_title(f"Clasificación: {tipo} ({nivel}, prob={prob:.2f})")
-    ax.set_xlabel("Día juliano"); ax.set_ylabel("Emergencia relativa (normalizada)")
-    ax.legend(loc="upper right"); ax.grid(alpha=0.3)
+# ========= ENTRENAMIENTO =========
+st.sidebar.header("⚙️ Entrenamiento del modelo")
+if st.sidebar.button("🏋️ Entrenar modelo con históricos"):
+    X, y = [], []
+    for fname, label in DATASET.items():
+        p = Path(fname)
+        if p.exists():
+            x, yv = extraer_curva(p)
+            feats, _ = extraer_features(x, yv)
+            X.append(feats)
+            y.append(label)
+    X, y = np.array(X), np.array(y)
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
+    ])
+    pipe.fit(X, y)
+    pickle.dump(pipe, open(modelo_path, "wb"))
+    st.success(f"✅ Modelo entrenado y guardado en {modelo_path}")
+    df_train = pd.DataFrame({"imagen": list(DATASET.keys()), "patrón": list(DATASET.values())})
+    st.dataframe(df_train)
+
+# ========= CLASIFICACIÓN =========
+st.header("📈 Clasificación de una nueva curva")
+
+uploaded = st.file_uploader("Cargar imagen de curva (.png o .jpg)", type=["png","jpg"])
+if uploaded and modelo_path.exists():
+    tmp = Path("temp_upload.png")
+    tmp.write_bytes(uploaded.read())
+
+    model = pickle.load(open(modelo_path, "rb"))
+    x, y = extraer_curva(tmp)
+    feats, f_names = extraer_features(x, y)
+
+    pred = model.predict([feats])[0]
+    prob = np.max(model.predict_proba([feats]))
+
+    st.success(f"📊 Patrón detectado: **{pred}** — Probabilidad: {prob:.2f}")
+
+    fig, ax = plt.subplots(figsize=(8,4))
+    ax.plot(x, y, color="black", lw=1.5)
+    ax.set_title(f"Clasificación: {pred} (prob={prob:.2f})")
+    ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa (0–1)")
     st.pyplot(fig)
 
-    # ========= EXPORTAR RESULTADO =========
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    row = pd.DataFrame([[fname, tipo, prob, modo_ventana, ts]],
-                       columns=["imagen", "tipo", "probabilidad", "ventana", "fecha"])
-    if CSV_PATH.exists():
-        df_old = pd.read_csv(CSV_PATH)
-        df_new = pd.concat([df_old, row], ignore_index=True)
-    else:
-        df_new = row
-    df_new.to_csv(CSV_PATH, index=False)
-    st.success(f"✅ Clasificación guardada en {CSV_PATH.name}")
+    feat_table = pd.DataFrame([feats], columns=f_names).T
+    st.markdown("### 🔍 Características extraídas")
+    st.dataframe(feat_table.style.format("{:.2f}"))
 
-else:
-    st.info("📂 Cargá una imagen con eje X en días julianos (0–300).")
+elif uploaded:
+    st.error("⚠️ Primero entrená el modelo antes de clasificar.")
 
-    # ========= MOSTRAR TABLA DE RESULTADOS =========
-    st.subheader("📋 Resultados recientes")
-    st.dataframe(
-        df_new.tail(10).style.format({
-            "probabilidad": "{:.2f}",
-            "sep_media_días": "{:.1f}",
-            "altura_media": "{:.2f}",
-            "altura_max": "{:.2f}"
-        }),
-        use_container_width=True
-    )
+# ========= LIMPIEZA OPCIONAL =========
+if st.sidebar.button("🧹 Borrar modelo entrenado"):
+    if modelo_path.exists():
+        modelo_path.unlink()
+        st.warning("Modelo eliminado. Podés volver a entrenarlo.")
 
-    # Mostrar resumen agregado
-    resumen = (
-        df_new.groupby("tipo")
-        .agg({"imagen": "count", "probabilidad": "mean"})
-        .rename(columns={"imagen": "n_imágenes", "probabilidad": "promedio_prob"})
-        .reset_index()
-    )
-
-    st.markdown("### 📊 Resumen de clasificaciones acumuladas")
-    st.bar_chart(resumen.set_index("tipo")["n_imágenes"])
-    st.dataframe(resumen.style.format({"promedio_prob": "{:.2f}"}))
