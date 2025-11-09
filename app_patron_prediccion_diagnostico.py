@@ -1,68 +1,70 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador robusto (detección de curva negra, límite al 1° mayo)
+# 🌾 PREDWEEM — Clasificador robusto (curva negra + seguimiento preciso hasta 1° mayo)
 import streamlit as st
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
 
-# ========== CONFIGURACIÓN STREAMLIT ==========
-st.set_page_config(page_title="Clasificador PREDWEEM — Robustizado (1° mayo)", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Corte al 1° de mayo (detección robusta de curvas negras)")
+# ========= CONFIGURACIÓN STREAMLIT =========
+st.set_page_config(page_title="Clasificador PREDWEEM — Preciso (1° mayo)", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Precisión fotométrica (curva negra, corte al 1° mayo)")
 
 st.markdown("""
-Analiza **gráficos históricos en escala de grises o curvas ANN** para identificar el patrón de emergencia (P1, P1b, P2, P3).  
-Usa sólo la información hasta el **1° de mayo (día juliano 121)** y corrige detecciones falsas mediante morfología y suavizado.
+Analiza gráficos de **emergencia relativa** con eje X en **días julianos (0–300)**.  
+Detecta automáticamente la **curva negra** principal, reconstruye su forma exacta y la usa para determinar el **patrón histórico (P1, P1b, P2, P3)**.  
+Solo se usa información hasta el **1° de mayo (día juliano 121)** para clasificar.
 """)
 
-# ========== SIDEBAR ==========
-st.sidebar.header("⚙️ Parámetros de detección")
-
+# ========= SIDEBAR =========
+st.sidebar.header("⚙️ Parámetros de análisis")
 height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.05, 0.5, 0.22, 0.01)
-dist_min = st.sidebar.slider("Distancia mínima entre picos (px ≈ días julianos)", 10, 80, 35, 5)
-gamma_corr = st.sidebar.slider("Corrección gamma", 0.2, 1.0, 0.4, 0.1)
-gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
+dist_min = st.sidebar.slider("Distancia mínima entre picos (≈ días julianos)", 10, 80, 35, 5)
+window_smooth = st.sidebar.slider("Ventana de suavizado (px)", 5, 51, 15, 2)
+poly_order = st.sidebar.slider("Orden del filtro", 1, 3, 2, 1)
 
-uploaded = st.file_uploader("📤 Cargar imagen del gráfico (.png o .jpg)", type=["png", "jpg"])
+uploaded = st.file_uploader("📤 Cargar imagen (.png o .jpg)", type=["png", "jpg"])
 
-# ========== PROCESAMIENTO ==========
+# ========= PROCESAMIENTO =========
 if uploaded:
     file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     st.image(uploaded, caption="📈 Imagen original", use_container_width=True)
 
-    # Convertir a gris y realzar contraste
+    # --- Conversión a gris e inversión ---
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray_eq = cv2.equalizeHist(gray)
-    blur = cv2.GaussianBlur(gray_eq, (5, 5), 0)
+    h, w = gray.shape
+    gray_inv = 255 - gray
+    gray_norm = cv2.GaussianBlur(gray_inv, (3, 3), 0)
+    gray_norm = gray_norm.astype(float) / 255.0
 
-    # Binarización adaptativa inversa
-    mask = cv2.adaptiveThreshold(
-        blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY_INV, 41, 12
-    )
+    # --- Seguimiento vertical de línea negra (píxel más oscuro por columna) ---
+    curve_y = []
+    for i in range(w):
+        col = gray_norm[:, i]
+        if np.max(col) > 0.25:  # ignora columnas sin trazo
+            y_pos = np.argmax(col)
+            curve_y.append(h - y_pos)
+        else:
+            curve_y.append(np.nan)
+    curve_y = np.array(curve_y)
 
-    # Morfología para suavizar y cerrar huecos
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    # --- Interpolación de huecos y normalización ---
+    curve_y = pd.Series(curve_y).interpolate(limit_direction="both").to_numpy()
+    y_norm = (curve_y - np.nanmin(curve_y)) / (np.nanmax(curve_y) - np.nanmin(curve_y) + 1e-6)
 
-    st.image(mask, caption="🧭 Curva procesada (limpia y continua)", use_container_width=True)
+    # --- Eje temporal juliano ---
+    x_julian = np.linspace(0, 300, len(y_norm))
 
-    # Promedio vertical y suavizado
-    curve = np.mean(mask, axis=0)
-    curve_smooth = savgol_filter(curve, 35, 3)
-    curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
-    curve_smooth = np.clip(curve_smooth ** gamma_corr * gain, 0, 1)
-
-    # Escala temporal en días julianos
-    x_julian = np.linspace(0, 300, len(curve_smooth))
-
-    # Corte al 1° de mayo (día juliano 121)
+    # --- Corte al 1° mayo (día juliano 121) ---
     mask_corte = x_julian <= 121
-    x_sub, y_sub = x_julian[mask_corte], curve_smooth[mask_corte]
+    x_sub, y_sub = x_julian[mask_corte], y_norm[mask_corte]
 
-    # ========== CLASIFICACIÓN ==========
+    # --- Suavizado leve (sin deformar) ---
+    y_smooth = savgol_filter(y_sub, window_smooth, poly_order)
+
+    # ========= CLASIFICACIÓN =========
     def clasificar(curva, thr, dist):
         peaks, props = find_peaks(curva, height=thr, distance=dist)
         heights = props.get("peak_heights", [])
@@ -77,7 +79,7 @@ if uploaded:
         hmean = float(np.mean(heights))
         ratio_minor = float(np.min(heights) / (hmax + 1e-6)) if len(heights) > 1 else 0.0
 
-        # Lógica revisada (P1b más estricta)
+        # --- Criterios revisados ---
         if n == 1:
             tipo = "P1"
         elif n == 2:
@@ -97,15 +99,21 @@ if uploaded:
 
         return tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean
 
-    tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean = clasificar(y_sub, height_thr, dist_min)
+    tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean = clasificar(y_smooth, height_thr, dist_min)
     nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
 
-    # ========== VISUALIZACIÓN ==========
+    # ========= VISUALIZACIÓN =========
+    st.subheader("📊 Curva reconstruida hasta 1° mayo (JD ≤ 121)")
+
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(x_julian, curve_smooth, color="lightgray", lw=1.5, label="Curva completa")
-    ax.plot(x_sub, y_sub, color="royalblue", lw=2, label="Tramo ≤ 1-mayo")
+    ax.plot(x_julian, y_norm, color="lightgray", lw=1.2, label="Curva completa (0–300)")
+    ax.plot(x_sub, y_smooth, color="royalblue", lw=2, label="Tramo ≤ 1° mayo (analizado)")
+
     if len(peaks):
-        ax.plot(x_sub[peaks], y_sub[peaks], "ro", label="Picos detectados")
+        ax.plot(x_sub[peaks], y_smooth[peaks], "ro", label="Picos detectados")
+        for i, p in enumerate(peaks):
+            ax.text(x_sub[p], min(1.02, y_smooth[p] + 0.03), f"{x_sub[p]:.0f}", fontsize=8, rotation=45, ha="center")
+
     ax.axvline(121, color="red", linestyle="--", lw=1.2, label="1° mayo (JD 121)")
     ax.set_title(f"Clasificación al 1° mayo: {tipo} ({nivel}, prob={prob:.2f})")
     ax.set_xlabel("Día juliano")
@@ -114,24 +122,31 @@ if uploaded:
     ax.grid(alpha=0.3)
     st.pyplot(fig)
 
-    # ========== DESCRIPCIÓN ==========
+    # ========= DESCRIPCIÓN =========
+    st.subheader("🌾 Descripción agronómica")
     st.markdown(f"""
-    ### 🌾 Clasificación
-    - **Tipo detectado:** {tipo}  
-    - **Probabilidad:** {prob:.2f} ({nivel})  
-    - **Separación media entre picos:** {mean_sep:.1f}  
-    - **Proporción pico menor / mayor:** {ratio_minor:.2f}
+    **Tipo detectado:** {tipo}  
+    **Probabilidad:** {prob:.2f} ({nivel})  
+    **Separación media:** {mean_sep:.1f}  
+    **Proporción pico menor/mayor:** {heights[-1]/heights[0] if len(heights) > 1 else 0:.2f}  
 
-    **Interpretación agronómica:**
+    **Interpretación:**
     - **P1:** Emergencia única, compacta y temprana.  
-    - **P1b:** Pico principal temprano + pequeño repunte posterior (como 2008).  
-    - **P2:** Dos cohortes bien separadas y de magnitud similar.  
-    - **P3:** Emergencia prolongada con múltiples cohortes.
+    - **P1b:** Pico principal temprano + repunte leve posterior (como 2008).  
+    - **P2:** Dos cohortes bien separadas y comparables.  
+    - **P3:** Emergencia prolongada y continua.
 
-    🔎 *El análisis se limita al día juliano 121 (1° mayo); eventos posteriores no se usan para clasificar.*
+    🔎 *Solo se utiliza información hasta el día juliano 121 (1° mayo); los picos posteriores no influyen en la clasificación.*
     """)
 
-else:
-    st.info("Cargá una imagen (.png o .jpg) con el eje X en días julianos (0–300) para analizar hasta el 1° de mayo.")
+    # ========= VISTA DE VERIFICACIÓN =========
+    st.subheader("🔍 Verificación del seguimiento de línea")
+    fig2, ax2 = plt.subplots(figsize=(10, 3))
+    ax2.imshow(gray, cmap="gray")
+    ax2.plot(np.arange(len(y_norm)), h - y_norm * h, color="red", lw=1)
+    ax2.set_title("Seguimiento del trazo negro (línea reconstruida)")
+    st.pyplot(fig2)
 
+else:
+    st.info("📂 Cargá una imagen con eje X en días julianos (0–300). El análisis se corta automáticamente al 1° mayo (JD 121).")
 
