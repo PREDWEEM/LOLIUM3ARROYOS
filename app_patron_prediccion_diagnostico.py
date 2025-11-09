@@ -331,4 +331,76 @@ if uploaded:
     - **P2:** alternancia seca/húmeda → dos cohortes bien separadas.  
     - **P3:** persistencia de humedad → emergencia prolongada en otoño e invierno.  
     """)
+
+    # ========= ANÁLISIS TEMPORAL DE CERTEZA =========
+    st.subheader("🕒 Evolución temporal de la clasificación (1-feb → 1-may)")
     
+    st.markdown("""
+    Este gráfico muestra **cómo cambia el tipo de patrón y su probabilidad de certeza**
+    a medida que avanza la campaña.  
+    Permite identificar **cuándo la clasificación se estabiliza** (por ejemplo, a fines de abril o al 1° de mayo).
+    """)
+    
+    # Solo calcular si hay datos de curva disponibles
+    if uploaded and len(df_curva) > 0:
+        fechas_corte = pd.date_range(start=fecha_febrero, end=fecha_mayo, freq="7D")
+        tipos, probs = [], []
+    
+        for f in fechas_corte:
+            df_sub = df_curva[df_curva["fecha"] <= f]
+            if len(df_sub) > 10:
+                tipo_tmp, prob_tmp, *_ = clasificar(df_sub["valor"].to_numpy(), height_thr, dist_min)
+            else:
+                tipo_tmp, prob_tmp = "-", 0
+            tipos.append(tipo_tmp)
+            probs.append(prob_tmp)
+    
+        df_evol = pd.DataFrame({"fecha": fechas_corte, "tipo": tipos, "prob": probs})
+    
+        # --- Gráfico ---
+        fig4, ax4 = plt.subplots(figsize=(10.5, 4.5))
+    
+        ax4.plot(df_evol["fecha"], df_evol["prob"], "o-", color="royalblue", lw=2, label="Probabilidad")
+        ax4.axhline(0.75, color="green", linestyle="--", lw=1, alpha=0.6, label="Umbral alta certeza (0.75)")
+        ax4.axhline(0.45, color="orange", linestyle="--", lw=1, alpha=0.5, label="Umbral media (0.45)")
+        ax4.axvline(pd.to_datetime(fecha_mayo), color="red", linestyle="--", lw=1.2, label="1-may")
+    
+        # Etiquetas de tipo en cada punto
+        for i, (f, t) in enumerate(zip(df_evol["fecha"], df_evol["tipo"])):
+            ax4.text(f, df_evol["prob"].iloc[i] + 0.02, t, ha='center', fontsize=9, color='black')
+    
+        ax4.set_ylim(0, 1.05)
+        ax4.set_xlabel("Fecha de corte de análisis")
+        ax4.set_ylabel("Probabilidad de clasificación")
+        ax4.set_title("Evolución de la certeza de clasificación entre 1-feb y 1-may")
+        ax4.legend(loc="lower right")
+        ax4.grid(alpha=0.25)
+        plt.xticks(rotation=45)
+        st.pyplot(fig4)
+    
+        # --- Interpretación textual ---
+        tipo_final = df_evol["tipo"].iloc[-1]
+        prob_final = df_evol["prob"].iloc[-1]
+        fecha_estable = None
+        for i in range(len(df_evol)):
+            if df_evol["prob"].iloc[i] >= 0.75:
+                fecha_estable = df_evol["fecha"].iloc[i]
+                break
+    
+        st.markdown("### 📊 Interpretación")
+        if fecha_estable:
+            st.markdown(f"""
+            - El patrón se estabiliza como **{tipo_final}** alrededor del **{fecha_estable.strftime('%d-%b')}**,  
+              con una probabilidad de certeza de **{prob_final:.2f}** al 1° de mayo.
+            - Esto indica que el modelo pudo **discriminar correctamente el tipo de patrón**
+              aproximadamente **{(fecha_estable - fecha_febrero).days} días** después del 1° de febrero.
+            """)
+        else:
+            st.markdown(f"""
+            - La clasificación **no alcanzó certeza alta (≥0.75)** antes del 1° de mayo.
+            - La probabilidad final al 1° de mayo fue **{prob_final:.2f}**, con tipo **{tipo_final}**.
+            """)
+
+else:
+    st.info("Cargá primero una imagen o ejecutá una curva para visualizar la evolución temporal de certeza.")
+
