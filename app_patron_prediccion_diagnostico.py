@@ -32,36 +32,44 @@ if uploaded:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     st.image(uploaded, caption="📈 Imagen original", use_container_width=True)
 
-    # --- Conversión a gris e inversión ---
+    # --- Conversión a gris ---
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
+
+    # --- 🧩 Corrección 1: recorte de márgenes ---
+    crop_left = int(w * 0.08)   # recorta eje Y (~8%)
+    crop_top = int(h * 0.10)    # recorta título (~10%)
+    crop_bottom = int(h * 0.05) # evita leyenda (~5%)
+    gray = gray[crop_top:h - crop_bottom, crop_left:w]
+    h, w = gray.shape
+
+    # --- Invertir para que el trazo negro sea alto ---
     gray_inv = 255 - gray
     gray_norm = cv2.GaussianBlur(gray_inv, (3, 3), 0)
     gray_norm = gray_norm.astype(float) / 255.0
 
-    # --- Seguimiento vertical de línea negra (píxel más oscuro por columna) ---
+    # --- 🧩 Corrección 2: seguimiento robusto de línea ---
     curve_y = []
     for i in range(w):
         col = gray_norm[:, i]
-        if np.max(col) > 0.25:  # ignora columnas sin trazo
-            y_pos = np.argmax(col)
-            curve_y.append(h - y_pos)
-        else:
+        # ignorar columnas con pocos píxeles oscuros (ruido lateral)
+        if np.count_nonzero(col > 0.25) < h * 0.05:
             curve_y.append(np.nan)
+            continue
+        y_pos = np.argmax(col)
+        curve_y.append(h - y_pos)
     curve_y = np.array(curve_y)
 
-    # --- Interpolación de huecos y normalización ---
+    # Interpolación y normalización
     curve_y = pd.Series(curve_y).interpolate(limit_direction="both").to_numpy()
     y_norm = (curve_y - np.nanmin(curve_y)) / (np.nanmax(curve_y) - np.nanmin(curve_y) + 1e-6)
-
-    # --- Eje temporal juliano ---
     x_julian = np.linspace(0, 300, len(y_norm))
 
-    # --- Corte al 1° mayo (día juliano 121) ---
+    # Corte al 1° mayo
     mask_corte = x_julian <= 121
     x_sub, y_sub = x_julian[mask_corte], y_norm[mask_corte]
 
-    # --- Suavizado leve (sin deformar) ---
+    # Suavizado leve
     y_smooth = savgol_filter(y_sub, window_smooth, poly_order)
 
     # ========= CLASIFICACIÓN =========
@@ -69,6 +77,13 @@ if uploaded:
         peaks, props = find_peaks(curva, height=thr, distance=dist)
         heights = props.get("peak_heights", [])
         n = len(peaks)
+
+        # 🧩 Corrección 3: eliminar picos falsos cerca del inicio del eje
+        if n > 0:
+            valid = np.array([x_sub[p] > 30 for p in peaks])
+            peaks = peaks[valid]
+            heights = [heights[i] for i in range(len(heights)) if valid[i]]
+            n = len(peaks)
 
         if n == 0:
             return "-", 0.0, [], [], 0, 0, 0, 0
@@ -139,14 +154,15 @@ if uploaded:
     🔎 *Solo se utiliza información hasta el día juliano 121 (1° mayo); los picos posteriores no influyen en la clasificación.*
     """)
 
-    # ========= VISTA DE VERIFICACIÓN =========
-    st.subheader("🔍 Verificación del seguimiento de línea")
+    # ========= VERIFICACIÓN DEL TRAZO =========
+    st.subheader("🔍 Seguimiento de la línea negra")
     fig2, ax2 = plt.subplots(figsize=(10, 3))
     ax2.imshow(gray, cmap="gray")
     ax2.plot(np.arange(len(y_norm)), h - y_norm * h, color="red", lw=1)
-    ax2.set_title("Seguimiento del trazo negro (línea reconstruida)")
+    ax2.set_title("Área útil del gráfico (ejes recortados y trazo seguido)")
     st.pyplot(fig2)
 
 else:
     st.info("📂 Cargá una imagen con eje X en días julianos (0–300). El análisis se corta automáticamente al 1° mayo (JD 121).")
+
 
