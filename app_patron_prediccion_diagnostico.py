@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador de patrones históricos (modelo base 2008–2012)
+# 🌾 PREDWEEM — Clasificador de patrones históricos (versión robusta)
 import streamlit as st
 import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, pickle
 from pathlib import Path
@@ -10,21 +10,19 @@ from sklearn.pipeline import Pipeline
 
 # ========= CONFIGURACIÓN =========
 st.set_page_config(page_title="PREDWEEM — Clasificador de patrones históricos", layout="wide")
-st.title("🌾 Clasificador de patrones históricos — Entrenamiento y predicción")
+st.title("🌾 Clasificador de patrones históricos — Versión robusta")
 
 st.markdown("""
-Este modelo se entrena con curvas históricas (2008–2012 + `newplot(7)` dentro de **P3**)  
-y permite clasificar nuevas imágenes de emergencia relativa según el **patrón histórico** detectado:
-- 🟦 **P1:** Emergencia rápida y compacta.  
-- 🟩 **P1b:** Emergencia temprana con pequeño repunte posterior.  
-- 🟧 **P2:** Emergencia bimodal (dos pulsos bien separados).  
-- 🟥 **P3:** Emergencia extendida o prolongada.
+Entrena y usa un modelo de clasificación basado en curvas históricas de emergencia (2008–2012 + `newplot(7)` dentro de **P3**).  
+Detecta automáticamente el patrón de emergencia (P1, P1b, P2, P3) a partir de nuevas imágenes.
 """)
 
 # ========= FUNCIONES AUXILIARES =========
 def extraer_curva(path_img):
     """Extrae la curva negra principal de una figura de emergencia (eje X: días julianos)."""
     img = cv2.imread(str(path_img))
+    if img is None:
+        raise ValueError("No se pudo leer la imagen.")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     gray = gray[int(h*0.1):int(h*0.95), int(w*0.08):]  # recorte margen
@@ -63,7 +61,7 @@ def extraer_features(x, y):
     }
     return np.array(list(features.values())), features.keys()
 
-# ========= DATOS HISTÓRICOS =========
+# ========= DATASET HISTÓRICO =========
 DATASET = {
     "2008.png": "P1b",
     "2009.png": "P2",
@@ -77,52 +75,67 @@ modelo_path = Path("modelo_patrones.pkl")
 
 # ========= ENTRENAMIENTO =========
 st.sidebar.header("⚙️ Entrenamiento del modelo")
+
 if st.sidebar.button("🏋️ Entrenar modelo con históricos"):
     X, y = [], []
     for fname, label in DATASET.items():
         p = Path(fname)
-        if p.exists():
+        if not p.exists():
+            st.error(f"❌ Archivo no encontrado: {fname}")
+            continue
+        try:
             x, yv = extraer_curva(p)
             feats, _ = extraer_features(x, yv)
+            if np.any(np.isnan(feats)) or np.all(feats == 0):
+                st.warning(f"⚠️ {fname} contiene datos no válidos. Omitido.")
+                continue
             X.append(feats)
             y.append(label)
-    X, y = np.array(X), np.array(y)
-    pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
-    ])
-    pipe.fit(X, y)
-    pickle.dump(pipe, open(modelo_path, "wb"))
-    st.success(f"✅ Modelo entrenado y guardado en {modelo_path}")
-    df_train = pd.DataFrame({"imagen": list(DATASET.keys()), "patrón": list(DATASET.values())})
-    st.dataframe(df_train)
+        except Exception as e:
+            st.warning(f"⚠️ Error al procesar {fname}: {e}")
+
+    if len(X) < 2:
+        st.error("❌ No hay suficientes curvas válidas para entrenar el modelo.")
+    else:
+        X, y = np.array(X), np.array(y)
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
+        ])
+        pipe.fit(X, y)
+        pickle.dump(pipe, open(modelo_path, "wb"))
+        st.success(f"✅ Modelo entrenado correctamente con {len(X)} curvas válidas.")
+        st.dataframe(pd.DataFrame({"imagen": list(DATASET.keys()), "patrón": list(DATASET.values())}))
 
 # ========= CLASIFICACIÓN =========
-st.header("📈 Clasificación de una nueva curva")
+st.header("📈 Clasificación de nueva curva")
+uploaded = st.file_uploader("Cargar imagen (.png o .jpg)", type=["png", "jpg"])
 
-uploaded = st.file_uploader("Cargar imagen de curva (.png o .jpg)", type=["png","jpg"])
 if uploaded and modelo_path.exists():
     tmp = Path("temp_upload.png")
     tmp.write_bytes(uploaded.read())
-
     model = pickle.load(open(modelo_path, "rb"))
-    x, y = extraer_curva(tmp)
-    feats, f_names = extraer_features(x, y)
 
-    pred = model.predict([feats])[0]
-    prob = np.max(model.predict_proba([feats]))
+    try:
+        x, yv = extraer_curva(tmp)
+        feats, f_names = extraer_features(x, yv)
+        pred = model.predict([feats])[0]
+        prob = np.max(model.predict_proba([feats]))
 
-    st.success(f"📊 Patrón detectado: **{pred}** — Probabilidad: {prob:.2f}")
+        st.success(f"📊 Patrón detectado: **{pred}** — Probabilidad: {prob:.2f}")
 
-    fig, ax = plt.subplots(figsize=(8,4))
-    ax.plot(x, y, color="black", lw=1.5)
-    ax.set_title(f"Clasificación: {pred} (prob={prob:.2f})")
-    ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa (0–1)")
-    st.pyplot(fig)
+        fig, ax = plt.subplots(figsize=(8,4))
+        ax.plot(x, yv, color="black", lw=1.5)
+        ax.set_title(f"Clasificación: {pred} (prob={prob:.2f})")
+        ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa (0–1)")
+        st.pyplot(fig)
 
-    feat_table = pd.DataFrame([feats], columns=f_names).T
-    st.markdown("### 🔍 Características extraídas")
-    st.dataframe(feat_table.style.format("{:.2f}"))
+        feat_table = pd.DataFrame([feats], columns=f_names).T
+        st.markdown("### 🔍 Características extraídas")
+        st.dataframe(feat_table.style.format("{:.2f}"))
+
+    except Exception as e:
+        st.error(f"❌ Error al analizar la imagen: {e}")
 
 elif uploaded:
     st.error("⚠️ Primero entrená el modelo antes de clasificar.")
@@ -131,5 +144,4 @@ elif uploaded:
 if st.sidebar.button("🧹 Borrar modelo entrenado"):
     if modelo_path.exists():
         modelo_path.unlink()
-        st.warning("Modelo eliminado. Podés volver a entrenarlo.")
-
+        st.warning("🗑️ Modelo eliminado. Podés volver a entrenarlo.")
