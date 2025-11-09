@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador de patrones históricos (versión robusta)
+# 🌾 PREDWEEM — Clasificador histórico con carga interactiva de imágenes
 import streamlit as st
 import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, pickle
 from pathlib import Path
@@ -8,16 +8,15 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-# ========= CONFIGURACIÓN =========
-st.set_page_config(page_title="PREDWEEM — Clasificador de patrones históricos", layout="wide")
-st.title("🌾 Clasificador de patrones históricos — Versión robusta")
+st.set_page_config(page_title="Clasificador PREDWEEM — Entrenamiento interactivo", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Entrenamiento interactivo y predicción")
 
 st.markdown("""
-Entrena y usa un modelo de clasificación basado en curvas históricas de emergencia (2008–2012 + `newplot(7)` dentro de **P3**).  
-Detecta automáticamente el patrón de emergencia (P1, P1b, P2, P3) a partir de nuevas imágenes.
+Podés **cargar tus propias curvas históricas**, asignarles un tipo de patrón (P1, P1b, P2, P3)  
+y entrenar el modelo directamente desde la interfaz.
 """)
 
-# ========= FUNCIONES AUXILIARES =========
+# ========= FUNCIONES =========
 def extraer_curva(path_img):
     """Extrae la curva negra principal de una figura de emergencia (eje X: días julianos)."""
     img = cv2.imread(str(path_img))
@@ -25,7 +24,7 @@ def extraer_curva(path_img):
         raise ValueError("No se pudo leer la imagen.")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    gray = gray[int(h*0.1):int(h*0.95), int(w*0.08):]  # recorte margen
+    gray = gray[int(h*0.1):int(h*0.95), int(w*0.08):]
     inv = 255 - gray
     inv = cv2.GaussianBlur(inv, (3,3), 0)
     y_curve = []
@@ -61,86 +60,93 @@ def extraer_features(x, y):
     }
     return np.array(list(features.values())), features.keys()
 
-# ========= DATASET HISTÓRICO =========
-DATASET = {
-    "2008.png": "P1b",
-    "2009.png": "P2",
-    "2010.png": "P3",
-    "2011.png": "P1b",
-    "2012.png": "P1",
-    "newplot (7).png": "P3"
-}
-
 modelo_path = Path("modelo_patrones.pkl")
 
+# ========= CARGA DE IMÁGENES PARA ENTRENAMIENTO =========
+st.header("📥 Cargar imágenes para entrenar el modelo")
+
+uploaded_files = st.file_uploader(
+    "Seleccioná una o más imágenes (.png o .jpg)",
+    type=["png", "jpg"],
+    accept_multiple_files=True
+)
+
+train_data = []
+
+if uploaded_files:
+    st.info("Seleccioná el tipo de patrón para cada imagen cargada.")
+    for file in uploaded_files:
+        label = st.selectbox(
+            f"🖼️ {file.name} — seleccionar patrón:",
+            ["P1", "P1b", "P2", "P3"],
+            key=file.name
+        )
+        temp_path = Path(f"temp_{file.name}")
+        temp_path.write_bytes(file.read())
+        train_data.append((temp_path, label))
+        st.image(str(temp_path), caption=f"{file.name} — {label}", use_container_width=True)
+
 # ========= ENTRENAMIENTO =========
-st.sidebar.header("⚙️ Entrenamiento del modelo")
-
-if st.sidebar.button("🏋️ Entrenar modelo con históricos"):
-    X, y = [], []
-    for fname, label in DATASET.items():
-        p = Path(fname)
-        if not p.exists():
-            st.error(f"❌ Archivo no encontrado: {fname}")
-            continue
-        try:
-            x, yv = extraer_curva(p)
-            feats, _ = extraer_features(x, yv)
-            if np.any(np.isnan(feats)) or np.all(feats == 0):
-                st.warning(f"⚠️ {fname} contiene datos no válidos. Omitido.")
-                continue
-            X.append(feats)
-            y.append(label)
-        except Exception as e:
-            st.warning(f"⚠️ Error al procesar {fname}: {e}")
-
-    if len(X) < 2:
-        st.error("❌ No hay suficientes curvas válidas para entrenar el modelo.")
+if st.button("🏋️ Entrenar modelo con imágenes cargadas"):
+    if not train_data:
+        st.error("⚠️ No se cargaron imágenes para entrenamiento.")
     else:
-        X, y = np.array(X), np.array(y)
-        pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
-        ])
-        pipe.fit(X, y)
-        pickle.dump(pipe, open(modelo_path, "wb"))
-        st.success(f"✅ Modelo entrenado correctamente con {len(X)} curvas válidas.")
-        st.dataframe(pd.DataFrame({"imagen": list(DATASET.keys()), "patrón": list(DATASET.values())}))
+        X, y = [], []
+        for path_img, label in train_data:
+            try:
+                x, yv = extraer_curva(path_img)
+                feats, _ = extraer_features(x, yv)
+                if np.any(np.isnan(feats)) or np.all(feats == 0):
+                    st.warning(f"⚠️ {path_img.name} tiene datos no válidos. Omitido.")
+                    continue
+                X.append(feats)
+                y.append(label)
+            except Exception as e:
+                st.warning(f"Error al procesar {path_img.name}: {e}")
+
+        if len(X) < 2:
+            st.error("❌ No hay suficientes curvas válidas para entrenar el modelo.")
+        else:
+            X, y = np.array(X), np.array(y)
+            pipe = Pipeline([
+                ("scaler", StandardScaler()),
+                ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
+            ])
+            pipe.fit(X, y)
+            pickle.dump(pipe, open(modelo_path, "wb"))
+            st.success(f"✅ Modelo entrenado correctamente con {len(X)} curvas válidas.")
+            df_train = pd.DataFrame({"imagen": [p.name for p,_ in train_data], "patrón": y})
+            st.dataframe(df_train)
 
 # ========= CLASIFICACIÓN =========
-st.header("📈 Clasificación de nueva curva")
-uploaded = st.file_uploader("Cargar imagen (.png o .jpg)", type=["png", "jpg"])
+st.header("📈 Clasificar nueva curva")
 
-if uploaded and modelo_path.exists():
+uploaded_pred = st.file_uploader("Cargar imagen para clasificación (.png o .jpg)", type=["png","jpg"])
+
+if uploaded_pred and modelo_path.exists():
     tmp = Path("temp_upload.png")
-    tmp.write_bytes(uploaded.read())
+    tmp.write_bytes(uploaded_pred.read())
     model = pickle.load(open(modelo_path, "rb"))
+    x, yv = extraer_curva(tmp)
+    feats, f_names = extraer_features(x, yv)
+    pred = model.predict([feats])[0]
+    prob = np.max(model.predict_proba([feats]))
+    st.success(f"📊 Patrón detectado: **{pred}** — Probabilidad: {prob:.2f}")
 
-    try:
-        x, yv = extraer_curva(tmp)
-        feats, f_names = extraer_features(x, yv)
-        pred = model.predict([feats])[0]
-        prob = np.max(model.predict_proba([feats]))
+    fig, ax = plt.subplots(figsize=(8,4))
+    ax.plot(x, yv, color="black", lw=1.5)
+    ax.set_title(f"Clasificación: {pred} (prob={prob:.2f})")
+    ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa (0–1)")
+    st.pyplot(fig)
 
-        st.success(f"📊 Patrón detectado: **{pred}** — Probabilidad: {prob:.2f}")
+    feat_table = pd.DataFrame([feats], columns=f_names).T
+    st.markdown("### 🔍 Características extraídas")
+    st.dataframe(feat_table.style.format("{:.2f}"))
 
-        fig, ax = plt.subplots(figsize=(8,4))
-        ax.plot(x, yv, color="black", lw=1.5)
-        ax.set_title(f"Clasificación: {pred} (prob={prob:.2f})")
-        ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa (0–1)")
-        st.pyplot(fig)
+elif uploaded_pred:
+    st.error("⚠️ Primero entrená el modelo con al menos dos imágenes.")
 
-        feat_table = pd.DataFrame([feats], columns=f_names).T
-        st.markdown("### 🔍 Características extraídas")
-        st.dataframe(feat_table.style.format("{:.2f}"))
-
-    except Exception as e:
-        st.error(f"❌ Error al analizar la imagen: {e}")
-
-elif uploaded:
-    st.error("⚠️ Primero entrená el modelo antes de clasificar.")
-
-# ========= LIMPIEZA OPCIONAL =========
+# ========= LIMPIAR MODELO =========
 if st.sidebar.button("🧹 Borrar modelo entrenado"):
     if modelo_path.exists():
         modelo_path.unlink()
