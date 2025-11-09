@@ -5,4 +5,5 @@ matplotlib>=3.6.0
 plotly>=5.0.0
 openpyxl>=3.1.2
 opencv-python-headless
-scipy
+scikit-learn>=1.5.0
+scipy>=1.13.0
