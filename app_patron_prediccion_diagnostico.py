@@ -187,3 +187,42 @@ if uploaded:
 else:
     st.info("📂 Cargá una imagen con eje X en días julianos (0–300).")
 
+    # ========= EXPORTAR Y MOSTRAR RESULTADOS =========
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    row = pd.DataFrame([[fname, tipo, prob, nivel, modo_ventana, mean_sep, hmean, hmax, ts]],
+                       columns=["imagen", "tipo", "probabilidad", "certeza", "ventana", 
+                                "sep_media_días", "altura_media", "altura_max", "fecha"])
+
+    # Guardar en CSV
+    if CSV_PATH.exists():
+        df_old = pd.read_csv(CSV_PATH)
+        df_new = pd.concat([df_old, row], ignore_index=True)
+    else:
+        df_new = row
+    df_new.to_csv(CSV_PATH, index=False)
+
+    st.success(f"✅ Clasificación guardada en {CSV_PATH.name}")
+
+    # ========= MOSTRAR TABLA DE RESULTADOS =========
+    st.subheader("📋 Resultados recientes")
+    st.dataframe(
+        df_new.tail(10).style.format({
+            "probabilidad": "{:.2f}",
+            "sep_media_días": "{:.1f}",
+            "altura_media": "{:.2f}",
+            "altura_max": "{:.2f}"
+        }),
+        use_container_width=True
+    )
+
+    # Mostrar resumen agregado
+    resumen = (
+        df_new.groupby("tipo")
+        .agg({"imagen": "count", "probabilidad": "mean"})
+        .rename(columns={"imagen": "n_imágenes", "probabilidad": "promedio_prob"})
+        .reset_index()
+    )
+
+    st.markdown("### 📊 Resumen de clasificaciones acumuladas")
+    st.bar_chart(resumen.set_index("tipo")["n_imágenes"])
+    st.dataframe(resumen.style.format({"promedio_prob": "{:.2f}"}))
