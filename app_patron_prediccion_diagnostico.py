@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador automático con límite temporal (1-may)
+# 🌾 PREDWEEM — Clasificador con límite temporal (1° mayo) y criterios revisados (P1b ajustado)
 import streamlit as st
-import cv2, os
+import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
-from datetime import date
 from pathlib import Path
 import pandas as pd
 
 # ========= CONFIGURACIÓN =========
-st.set_page_config(page_title="Clasificador PREDWEEM — Corte 1° de mayo", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Análisis limitado al 1° de mayo")
+st.set_page_config(page_title="Clasificador PREDWEEM — Corte 1° mayo", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Análisis limitado al 1° de mayo (criterios ajustados)")
 
 st.markdown("""
 Clasifica curvas de emergencia (ANN o históricas) **usando únicamente la información disponible hasta el 1° de mayo (día juliano 121)**.  
-Compatible con curvas negras históricas (2008–2012) y curvas azules ANN PREDWEEM.
+Incorpora criterios refinados para distinguir **P1b (compacto + repunte leve)** de P3 (prolongado).
 """)
 
 # ========= SIDEBAR =========
@@ -23,11 +22,10 @@ st.sidebar.header("⚙️ Parámetros de análisis")
 
 modo = st.sidebar.radio(
     "🎨 Tipo de gráfico a analizar:",
-    ["Detección automática", "Curva azul (ANN / PREDWEEM)", "Curva en negro (formato histórico)"],
-    index=0
+    ["Curva azul (ANN / PREDWEEM)", "Curva en negro (formato histórico)"],
+    index=1
 )
 
-# Parámetros
 height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.15, 0.01)
 dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 20, 5)
 gamma_corr = st.sidebar.slider("Corrección gamma", 0.2, 1.0, 0.4, 0.1)
@@ -41,21 +39,7 @@ if uploaded:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     st.image(uploaded, caption="📈 Imagen original", use_container_width=True)
 
-    # ========= DETECCIÓN AUTOMÁTICA =========
-    if modo == "Detección automática":
-        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        h_mean, s_mean = np.mean(img_hsv[:, :, 0]), np.mean(img_hsv[:, :, 1])
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        contrast = gray.std()
-        if 80 < h_mean < 130 and s_mean > 60:
-            modo = "Curva azul (ANN / PREDWEEM)"
-        elif contrast > 40 and s_mean < 40:
-            modo = "Curva en negro (formato histórico)"
-        else:
-            modo = "Curva en negro (formato histórico)"
-        st.sidebar.success(f"Modo detectado: **{modo}**")
-
-    # ========= MÁSCARA SEGÚN MODO =========
+    # ========= MÁSCARA =========
     if modo.startswith("Curva azul"):
         img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         lower_blue = np.array([80, 30, 160])
@@ -84,25 +68,46 @@ if uploaded:
     x_sub = x_julian[mask_corte]
     y_sub = curve_smooth[mask_corte]
 
-    # ========= CLASIFICACIÓN =========
+    # ========= CLASIFICACIÓN (ajustada) =========
     def clasificar(curva, thr, dist):
+        """
+        Clasifica patrones de emergencia (P1, P1b, P2, P3)
+        considerando separación y altura relativa de picos.
+        """
         peaks, props = find_peaks(curva, height=thr, distance=dist)
         heights = props.get("peak_heights", [])
         n = len(peaks)
+
+        if n == 0:
+            return "-", 0.0, [], [], 0, 0, 0, 0
+
         mean_sep = np.mean(np.diff(peaks)) if n > 1 else 0
         std_sep = np.std(np.diff(peaks)) if n > 2 else 0
-        hmax, hmean = (heights.max() if len(heights) else 0), (np.mean(heights) if len(heights) else 0)
+        hmax = float(np.max(heights))
+        hmean = float(np.mean(heights))
+        ratio_minor = float(np.min(heights) / (hmax + 1e-6)) if len(heights) > 1 else 0.0
 
-        if n == 1: tipo = "P1"
-        elif n == 2 and mean_sep < 50: tipo = "P1b"
-        elif n == 2: tipo = "P2"
-        else: tipo = "P3"
+        # --- Clasificación refinada ---
+        if n == 1:
+            tipo = "P1"
+        elif n == 2:
+            if mean_sep < 70 and ratio_minor < 0.35:
+                tipo = "P1b"      # compacto + pequeño repunte
+            elif mean_sep >= 70 and ratio_minor >= 0.35:
+                tipo = "P2"       # dos pulsos bien separados
+            else:
+                tipo = "P1b"      # caso intermedio
+        elif n >= 3:
+            tipo = "P3"           # múltiples cohortes → extendido
+        else:
+            tipo = "P3"
 
-        conf = ((hmax - hmean * 0.4) / (hmax + 1e-6)) * np.exp(-0.008 * std_sep) if hmax > 0 else 0.0
+        conf = ((hmax - hmean * 0.4) / (hmax + 1e-6)) * np.exp(-0.005 * std_sep)
         prob = float(np.clip(conf, 0.0, 1.0))
-        return tipo, prob, peaks, heights
 
-    tipo, prob, peaks, heights = clasificar(y_sub, height_thr, dist_min)
+        return tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean
+
+    tipo, prob, peaks, heights, mean_sep, std_sep, hmax, hmean = clasificar(y_sub, height_thr, dist_min)
     nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
 
     # ========= GRÁFICO =========
@@ -112,7 +117,7 @@ if uploaded:
     if len(peaks):
         ax.plot(x_sub[peaks], y_sub[peaks], "ro", label="Picos detectados")
     ax.axvline(121, color="red", linestyle="--", lw=1.2, label="1-may (día 121)")
-    ax.set_title(f"Clasificación hasta 1° de mayo: {tipo} ({nivel}, prob={prob:.2f})")
+    ax.set_title(f"Clasificación al 1° de mayo: {tipo} ({nivel}, prob={prob:.2f})")
     ax.set_xlabel("Día juliano")
     ax.set_ylabel("Emergencia relativa (normalizada)")
     ax.legend(loc="upper right")
@@ -127,12 +132,13 @@ if uploaded:
 
     **Interpretación agronómica:**  
     - **P1:** emergencia rápida y concentrada.  
-    - **P1b:** pico temprano + repunte posterior leve.  
-    - **P2:** dos cohortes separadas.  
-    - **P3:** emergencia prolongada, varias cohortes.
+    - **P1b:** pico principal temprano + pequeño repunte posterior (como el caso 2008).  
+    - **P2:** dos cohortes separadas y equivalentes.  
+    - **P3:** emergencia prolongada, con múltiples cohortes.
 
     🔎 *El análisis se limitó al 1° de mayo (día juliano 121); los eventos posteriores no fueron considerados.*
     """)
 
 else:
     st.info("Cargá una imagen (.png o .jpg) con el eje X en días julianos para analizar hasta el 1° de mayo.")
+
