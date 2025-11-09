@@ -1,59 +1,37 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador unificado automático (azul, negro o áreas)
+# 🌾 PREDWEEM — Clasificador automático con límite temporal (1-may)
 import streamlit as st
 import cv2, os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
-from datetime import datetime, timedelta, date
+from datetime import date
 from pathlib import Path
 import pandas as pd
 
 # ========= CONFIGURACIÓN =========
-st.set_page_config(page_title="Clasificador PREDWEEM — Automático", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Detección automática de curvas")
+st.set_page_config(page_title="Clasificador PREDWEEM — Corte 1° de mayo", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Análisis limitado al 1° de mayo")
 
 st.markdown("""
-Compatible con gráficos tipo **EMERREL (curva azul ANN)**, **curvas negras históricas (2008–2012)**  
-y **áreas multicolor (verde/amarillo/rojo)**.  
-Permite ajustar el eje temporal y generar una descripción agronómica completa del patrón detectado.
+Clasifica curvas de emergencia (ANN o históricas) **usando únicamente la información disponible hasta el 1° de mayo (día juliano 121)**.  
+Compatible con curvas negras históricas (2008–2012) y curvas azules ANN PREDWEEM.
 """)
 
 # ========= SIDEBAR =========
 st.sidebar.header("⚙️ Parámetros de análisis")
 
-# --- Tipo de gráfico ---
 modo = st.sidebar.radio(
     "🎨 Tipo de gráfico a analizar:",
-    ["Detección automática",
-     "Curva azul (ANN / PREDWEEM)",
-     "Curva en negro (formato histórico)",
-     "Áreas de color (verde/amarillo/rojo)"],
+    ["Detección automática", "Curva azul (ANN / PREDWEEM)", "Curva en negro (formato histórico)"],
     index=0
 )
 
-# --- Parámetros de detección ---
-st.sidebar.subheader("🎨 Parámetros de color (solo modo azul)")
-h_min = st.sidebar.slider("Hue mínimo (H)", 70, 130, 80)
-h_max = st.sidebar.slider("Hue máximo (H)", 110, 160, 150)
-s_min = st.sidebar.slider("Saturación mínima (S)", 0, 255, 30)
-v_min = st.sidebar.slider("Brillo mínimo (V)", 0, 255, 160)
-
-# --- Picos ---
-st.sidebar.subheader("📈 Detección de picos")
-height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.18, 0.01)
+# Parámetros
+height_thr = st.sidebar.slider("Umbral mínimo de altura", 0.01, 0.5, 0.15, 0.01)
 dist_min = st.sidebar.slider("Distancia mínima entre picos", 5, 80, 20, 5)
-gamma_corr = st.sidebar.slider("Realce de contraste (γ)", 0.2, 1.0, 0.4, 0.1)
-gain = st.sidebar.slider("Ganancia de contraste", 0.5, 3.0, 1.5, 0.1)
-
-# --- Escala temporal ---
-st.sidebar.subheader("📅 Escala temporal")
-year_ref = st.sidebar.number_input("Año de referencia", min_value=2000, max_value=2100, value=2025)
-fecha_inicio = st.sidebar.date_input("Fecha inicial", date(year_ref, 2, 1))
-fecha_fin = st.sidebar.date_input("Fecha final", date(year_ref, 8, 18))
-
-offset_dias = st.sidebar.slider("🧭 Desplazamiento (± días)", -60, 60, 0, 1)
-escala_factor = st.sidebar.slider("Escala temporal (%)", 50, 150, 100, 5)
+gamma_corr = st.sidebar.slider("Corrección gamma", 0.2, 1.0, 0.4, 0.1)
+gain = st.sidebar.slider("Ganancia", 0.5, 3.0, 1.5, 0.1)
 
 # ========= CARGA =========
 uploaded = st.file_uploader("📤 Cargar imagen (.png o .jpg)", type=["png", "jpg"])
@@ -64,62 +42,47 @@ if uploaded:
     st.image(uploaded, caption="📈 Imagen original", use_container_width=True)
 
     # ========= DETECCIÓN AUTOMÁTICA =========
-    modo_auto = None
     if modo == "Detección automática":
         img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        h_mean = np.mean(img_hsv[:, :, 0])
-        s_mean = np.mean(img_hsv[:, :, 1])
+        h_mean, s_mean = np.mean(img_hsv[:, :, 0]), np.mean(img_hsv[:, :, 1])
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         contrast = gray.std()
-
         if 80 < h_mean < 130 and s_mean > 60:
-            modo_auto = "Curva azul (ANN / PREDWEEM)"
+            modo = "Curva azul (ANN / PREDWEEM)"
         elif contrast > 40 and s_mean < 40:
-            modo_auto = "Curva en negro (formato histórico)"
+            modo = "Curva en negro (formato histórico)"
         else:
-            modo_auto = "Áreas de color (verde/amarillo/rojo)"
-        st.sidebar.success(f"Modo detectado automáticamente: **{modo_auto}**")
-        modo = modo_auto
+            modo = "Curva en negro (formato histórico)"
+        st.sidebar.success(f"Modo detectado: **{modo}**")
 
-    # ========= CONSTRUCCIÓN DE MÁSCARA =========
+    # ========= MÁSCARA SEGÚN MODO =========
     if modo.startswith("Curva azul"):
         img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        lower_blue = np.array([h_min, s_min, v_min])
-        upper_blue = np.array([h_max, 255, 255])
+        lower_blue = np.array([80, 30, 160])
+        upper_blue = np.array([150, 255, 255])
         mask = cv2.inRange(img_hsv, lower_blue, upper_blue)
-
-    elif modo.startswith("Curva en negro"):
+    else:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray_blur = cv2.GaussianBlur(gray, (3, 3), 0)
-        _, mask = cv2.threshold(gray_blur, 80, 255, cv2.THRESH_BINARY_INV)
-        kernel = np.ones((2, 2), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.GaussianBlur(mask, (1, 9), 0)
+        _, mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+        mask = cv2.GaussianBlur(mask, (3, 7), 0)
         h, w = mask.shape
         mask = mask[int(h * 0.15):int(h * 0.95), :]
 
-    else:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray_blur = cv2.GaussianBlur(gray, (3, 3), 0)
-        _, mask = cv2.threshold(gray_blur, 200, 255, cv2.THRESH_BINARY)
-        mask = cv2.bitwise_not(mask)
-        mask = cv2.GaussianBlur(mask, (1, 7), 0)
-        h, w = mask.shape
-        mask = mask[int(h * 0.25):int(h * 0.9), :]
-
     st.image(mask, caption="🧭 Curva detectada (máscara base)", use_container_width=True)
 
-    # ========= EXTRACCIÓN Y SUAVIZADO =========
+    # ========= EXTRACCIÓN Y NORMALIZACIÓN =========
     curve = np.mean(mask, axis=0)
     curve_smooth = cv2.GaussianBlur(curve.reshape(1, -1), (1, 9), 0).flatten()
     curve_smooth = (curve_smooth - curve_smooth.min()) / (curve_smooth.max() - curve_smooth.min() + 1e-6)
     curve_smooth = np.clip(curve_smooth ** gamma_corr * gain, 0, 1)
 
-    total_dias = (fecha_fin - fecha_inicio).days
-    dias_reales = int(total_dias * (escala_factor / 100))
-    fecha_fin_adj = fecha_inicio + timedelta(days=dias_reales)
-    fechas = pd.date_range(start=fecha_inicio, end=fecha_fin_adj, periods=len(curve_smooth))
-    fechas = fechas + timedelta(days=offset_dias)
+    # Simular eje en días julianos (0–300)
+    x_julian = np.linspace(0, 300, len(curve_smooth))
+
+    # === Recorte al 1° de mayo (día juliano 121) ===
+    mask_corte = x_julian <= 121
+    x_sub = x_julian[mask_corte]
+    y_sub = curve_smooth[mask_corte]
 
     # ========= CLASIFICACIÓN =========
     def clasificar(curva, thr, dist):
@@ -139,32 +102,37 @@ if uploaded:
         prob = float(np.clip(conf, 0.0, 1.0))
         return tipo, prob, peaks, heights
 
-    tipo, prob, peaks, heights = clasificar(curve_smooth, height_thr, dist_min)
+    tipo, prob, peaks, heights = clasificar(y_sub, height_thr, dist_min)
     nivel = "🔵 Alta" if prob > 0.75 else "🟠 Media" if prob > 0.45 else "🔴 Baja"
 
-    # ========= VISUALIZACIÓN =========
+    # ========= GRÁFICO =========
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(fechas, curve_smooth, color="royalblue", lw=2)
+    ax.plot(x_julian, curve_smooth, color="gray", lw=1.5, label="Curva completa")
+    ax.plot(x_sub, y_sub, color="royalblue", lw=2, label="Tramo analizado (≤ 1-may)")
     if len(peaks):
-        ax.plot(fechas[peaks], curve_smooth[peaks], "ro")
-    ax.set_title(f"Patrón detectado: {tipo} ({nivel}, prob={prob:.2f})")
-    ax.grid(True, alpha=0.3)
-    plt.xticks(rotation=45)
+        ax.plot(x_sub[peaks], y_sub[peaks], "ro", label="Picos detectados")
+    ax.axvline(121, color="red", linestyle="--", lw=1.2, label="1-may (día 121)")
+    ax.set_title(f"Clasificación hasta 1° de mayo: {tipo} ({nivel}, prob={prob:.2f})")
+    ax.set_xlabel("Día juliano")
+    ax.set_ylabel("Emergencia relativa (normalizada)")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.3)
     st.pyplot(fig)
 
     # ========= DESCRIPCIÓN =========
     st.markdown(f"""
-    ### 🌾 Descripción del patrón
-    **Tipo:** {tipo}  
+    ### 🌾 Clasificación al 1° de mayo
+    **Tipo detectado:** {tipo}  
     **Probabilidad:** {prob:.2f} ({nivel})  
 
     **Interpretación agronómica:**  
     - **P1:** emergencia rápida y concentrada.  
-    - **P1b:** pico temprano + pequeño repunte posterior.  
-    - **P2:** dos cohortes separadas (bimodal).  
-    - **P3:** emergencia prolongada y escalonada.  
+    - **P1b:** pico temprano + repunte posterior leve.  
+    - **P2:** dos cohortes separadas.  
+    - **P3:** emergencia prolongada, varias cohortes.
+
+    🔎 *El análisis se limitó al 1° de mayo (día juliano 121); los eventos posteriores no fueron considerados.*
     """)
 
 else:
-    st.info("Cargá una imagen (.png o .jpg) para iniciar la clasificación.")
-
+    st.info("Cargá una imagen (.png o .jpg) con el eje X en días julianos para analizar hasta el 1° de mayo.")
