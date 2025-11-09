@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador (JD 1–121) con diagnóstico temporal + guardado/carga de modelo
+# 🌾 PREDWEEM — Clasificador (JD 1–121) con asignación manual de patrones
 import streamlit as st
 import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, pickle
 from pathlib import Path
@@ -8,17 +8,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-# ========= CONFIGURACIÓN =========
-st.set_page_config(page_title="PREDWEEM — Clasificador con guardado/carga de modelo", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Diagnóstico y gestión de modelo (JD 1–121)")
+st.set_page_config(page_title="PREDWEEM — Entrenamiento manual + diagnóstico", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Asignación manual + Diagnóstico de estabilidad (JD 1–121)")
 
 st.markdown("""
-El modelo analiza **solo los días julianos 1–121 (1 enero → 1 mayo)**  
-y permite **entrenar, guardar, cargar y diagnosticar estabilidad temporal**  
-de la clasificación de patrones de emergencia.
+Podés cargar varias imágenes históricas y **asignar manualmente el patrón** (P1, P1b, P2, P3)  
+antes de entrenar el modelo.  
+Solo se usa el tramo **JD 1–121 (1 enero → 1 mayo)** para el análisis.
 """)
 
-# ========= FUNCIONES BASE =========
+# ========= FUNCIONES =========
 def extraer_curva(path_img):
     img = cv2.imread(str(path_img))
     if img is None:
@@ -62,77 +61,73 @@ def extraer_features(x, y):
 
 modelo_path = Path("modelo_patrones_jd121.pkl")
 
-# ========= SIDEBAR: OPCIONES DE MODELO =========
-st.sidebar.header("⚙️ Gestión de modelo")
+# ========= CARGA DE IMÁGENES =========
+st.header("📥 Asignación manual de patrones para entrenamiento")
+uploaded_train = st.file_uploader("Cargar imágenes históricas (.png o .jpg)", type=["png","jpg"], accept_multiple_files=True)
 
-modo_modelo = st.sidebar.radio("Seleccioná una opción:",
-                               ["Entrenar nuevo modelo", "Cargar modelo guardado (.pkl)"],
-                               index=0)
+train_data = []
+if uploaded_train:
+    st.info("Revisá cada imagen y seleccioná el patrón correspondiente:")
+    cols = st.columns(2)
+    for i, file in enumerate(uploaded_train):
+        with cols[i % 2]:
+            tmp = Path(f"temp_{file.name}")
+            tmp.write_bytes(file.read())
+            st.image(str(tmp), caption=file.name, use_container_width=True)
+            label = st.selectbox(f"🧭 Patrón para {file.name}",
+                                 ["P1", "P1b", "P2", "P3"],
+                                 key=f"label_{file.name}")
+            train_data.append((tmp, label))
 
-modelo = None
-
-# --- Opción 1: Entrenamiento ---
-if modo_modelo == "Entrenar nuevo modelo":
-    uploaded_train = st.sidebar.file_uploader("Cargar imágenes para entrenamiento", type=["png","jpg"], accept_multiple_files=True)
-    if st.sidebar.button("🏋️ Entrenar modelo (JD 1–121)"):
-        if not uploaded_train:
-            st.error("No se cargaron imágenes.")
-        else:
-            X, y, etiquetas = [], [], {}
-            for f in uploaded_train:
-                label = st.sidebar.selectbox(f"Etiqueta para {f.name}", ["P1","P1b","P2","P3"], key=f.name)
-                tmp = Path(f"tmp_{f.name}")
-                tmp.write_bytes(f.read())
-                x, yv = extraer_curva(tmp)
+# ========= ENTRENAMIENTO =========
+if st.button("🏋️ Entrenar modelo con asignación manual (JD 1–121)"):
+    if not train_data:
+        st.error("⚠️ No se cargaron imágenes o etiquetas.")
+    else:
+        X, y = [], []
+        for path_img, label in train_data:
+            try:
+                x, yv = extraer_curva(path_img)
                 mask = (x >= 1) & (x <= 121)
                 x, yv = x[mask], yv[mask]
                 feats, _ = extraer_features(x, yv)
                 X.append(feats); y.append(label)
-                etiquetas[f.name] = label
-
-            X, y = np.array(X), np.array(y)
-            modelo = Pipeline([
+            except Exception as e:
+                st.warning(f"Error procesando {path_img.name}: {e}")
+        if len(X) < 2:
+            st.error("❌ No hay suficientes curvas válidas.")
+        else:
+            model = Pipeline([
                 ("scaler", StandardScaler()),
                 ("rf", RandomForestClassifier(n_estimators=300, random_state=42))
             ])
-            modelo.fit(X, y)
-            pickle.dump(modelo, open(modelo_path, "wb"))
-
-            st.success(f"✅ Modelo entrenado con {len(X)} curvas.")
-            df_train = pd.DataFrame(list(etiquetas.items()), columns=["Imagen", "Patrón"])
+            model.fit(np.array(X), np.array(y))
+            pickle.dump(model, open(modelo_path, "wb"))
+            st.success(f"✅ Modelo entrenado con {len(X)} imágenes etiquetadas manualmente.")
+            
+            df_train = pd.DataFrame({"Imagen": [p.name for p,_ in train_data],
+                                     "Patrón asignado": y})
             st.dataframe(df_train)
 
-            # 💾 Descargar modelo
             with open(modelo_path, "rb") as f:
                 st.download_button("💾 Descargar modelo entrenado (.pkl)",
                                    f, file_name="modelo_patrones_jd121.pkl",
                                    mime="application/octet-stream")
 
-# --- Opción 2: Cargar modelo guardado ---
-elif modo_modelo == "Cargar modelo guardado (.pkl)":
-    uploaded_model = st.sidebar.file_uploader("Cargar archivo .pkl", type=["pkl"])
-    if uploaded_model:
-        modelo_path = Path("modelo_cargado.pkl")
-        modelo_path.write_bytes(uploaded_model.read())
-        modelo = pickle.load(open(modelo_path, "rb"))
-        st.sidebar.success("✅ Modelo cargado correctamente.")
-
-# ========= CLASIFICACIÓN + DIAGNÓSTICO =========
-st.header("📈 Clasificación y diagnóstico (solo JD 1–121)")
+# ========= CLASIFICACIÓN =========
+st.header("📈 Clasificación y diagnóstico de estabilidad")
 uploaded_pred = st.file_uploader("Cargar imagen para clasificación (.png o .jpg)", type=["png","jpg"])
 
 if uploaded_pred and modelo_path.exists():
     tmp = Path("temp_pred.png"); tmp.write_bytes(uploaded_pred.read())
-    modelo = pickle.load(open(modelo_path, "rb"))
+    model = pickle.load(open(modelo_path, "rb"))
 
     x, yv = extraer_curva(tmp)
     mask_121 = (x >= 1) & (x <= 121)
     x, yv = x[mask_121], yv[mask_121]
-
     feats, f_names = extraer_features(x, yv)
-    pred = modelo.predict([feats])[0]
-    prob = np.max(modelo.predict_proba([feats]))
-
+    pred = model.predict([feats])[0]
+    prob = np.max(model.predict_proba([feats]))
     st.success(f"📊 Patrón detectado (JD 1–121): **{pred}** — Probabilidad: {prob:.2f}")
 
     fig, ax = plt.subplots(figsize=(8,4))
@@ -143,15 +138,15 @@ if uploaded_pred and modelo_path.exists():
     ax.set_title(f"Clasificación principal: {pred} (prob={prob:.2f})")
     st.pyplot(fig)
 
-    # -------- Diagnóstico temporal --------
-    st.subheader("🧭 Diagnóstico de estabilidad de clasificación")
+    # -------- Diagnóstico --------
+    st.subheader("🧭 Diagnóstico de estabilidad (JD 60–121)")
     cortes = [60, 90, 105, 121]
     resultados = []
     for c in cortes:
         mask = (x >= 1) & (x <= c)
         feats_c, _ = extraer_features(x[mask], yv[mask])
-        pred_c = modelo.predict([feats_c])[0]
-        prob_c = np.max(modelo.predict_proba([feats_c]))
+        pred_c = model.predict([feats_c])[0]
+        prob_c = np.max(model.predict_proba([feats_c]))
         resultados.append((c, pred_c, prob_c))
     df_diag = pd.DataFrame(resultados, columns=["JD_final","Patrón","Probabilidad"])
     st.dataframe(df_diag.style.format({"Probabilidad":"{:.2f}"}))
@@ -164,21 +159,12 @@ if uploaded_pred and modelo_path.exists():
     ax2.axhline(0.45, color="orange", linestyle="--", lw=1, alpha=0.5, label="Media (≥0.45)")
     ax2.set_xlabel("JD límite usado para clasificación")
     ax2.set_ylabel("Probabilidad")
-    ax2.set_title("Evolución temporal de certeza de clasificación")
+    ax2.set_title("Evolución temporal de la clasificación (1 ene → 1 may)")
     ax2.legend(); ax2.grid(alpha=0.3)
     st.pyplot(fig2)
 
-    # 📅 Identificar punto de estabilización
-    estables = df_diag[df_diag["Probabilidad"] >= 0.75]
-    if not estables.empty:
-        jd_estable = int(estables.iloc[0]["JD_final"])
-        st.success(f"✅ El patrón se estabiliza alrededor del **JD {jd_estable}**, "
-                   f"equivalente al {jd_estable}° día del año (~{jd_estable//30+1:02d}-mes).")
-    else:
-        st.warning("⚠️ La clasificación no alcanza alta certeza (≥0.75) antes de JD 121.")
-
-# ========= LIMPIAR MODELO =========
-if st.sidebar.button("🧹 Borrar modelo"):
+# ========= LIMPIAR =========
+if st.sidebar.button("🧹 Borrar modelo entrenado"):
     if modelo_path.exists():
         modelo_path.unlink()
-        st.sidebar.warning("🗑️ Modelo eliminado. Podés entrenar o cargar otro.")
+        st.sidebar.warning("🗑️ Modelo eliminado.")
