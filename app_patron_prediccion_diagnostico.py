@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador (JD 1–121) con asignación manual de patrones
+# 🌾 PREDWEEM — Clasificador (JD 1–121) con asignación manual y guardado del modelo
 import streamlit as st
 import cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, pickle
 from pathlib import Path
@@ -8,13 +8,13 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-st.set_page_config(page_title="PREDWEEM — Entrenamiento manual + diagnóstico", layout="wide")
-st.title("🌾 Clasificador PREDWEEM — Asignación manual + Diagnóstico de estabilidad (JD 1–121)")
+st.set_page_config(page_title="PREDWEEM — Entrenamiento manual + guardado modelo", layout="wide")
+st.title("🌾 Clasificador PREDWEEM — Entrenamiento manual y guardado del modelo (JD 1–121)")
 
 st.markdown("""
-Podés cargar varias imágenes históricas y **asignar manualmente el patrón** (P1, P1b, P2, P3)  
-antes de entrenar el modelo.  
-Solo se usa el tramo **JD 1–121 (1 enero → 1 mayo)** para el análisis.
+Podés **asignar manualmente el patrón** (P1, P1b, P2, P3) a cada imagen antes de entrenar.  
+El modelo se entrena solo con los días julianos **1–121 (1 enero → 1 mayo)**  
+y luego podrás **descargar el modelo entrenado (.pkl)** para reutilizarlo o guardarlo.
 """)
 
 # ========= FUNCIONES =========
@@ -61,13 +61,13 @@ def extraer_features(x, y):
 
 modelo_path = Path("modelo_patrones_jd121.pkl")
 
-# ========= CARGA DE IMÁGENES =========
-st.header("📥 Asignación manual de patrones para entrenamiento")
-uploaded_train = st.file_uploader("Cargar imágenes históricas (.png o .jpg)", type=["png","jpg"], accept_multiple_files=True)
+# ========= CARGA Y ASIGNACIÓN MANUAL =========
+st.header("📥 Cargar imágenes y asignar manualmente el patrón")
+uploaded_train = st.file_uploader("Seleccioná las imágenes históricas (.png o .jpg)", type=["png","jpg"], accept_multiple_files=True)
 
 train_data = []
 if uploaded_train:
-    st.info("Revisá cada imagen y seleccioná el patrón correspondiente:")
+    st.info("Seleccioná manualmente el patrón correspondiente a cada imagen:")
     cols = st.columns(2)
     for i, file in enumerate(uploaded_train):
         with cols[i % 2]:
@@ -79,8 +79,8 @@ if uploaded_train:
                                  key=f"label_{file.name}")
             train_data.append((tmp, label))
 
-# ========= ENTRENAMIENTO =========
-if st.button("🏋️ Entrenar modelo con asignación manual (JD 1–121)"):
+# ========= ENTRENAMIENTO Y GUARDADO =========
+if st.button("🏋️ Entrenar y guardar modelo (JD 1–121)"):
     if not train_data:
         st.error("⚠️ No se cargaron imágenes o etiquetas.")
     else:
@@ -104,18 +104,35 @@ if st.button("🏋️ Entrenar modelo con asignación manual (JD 1–121)"):
             model.fit(np.array(X), np.array(y))
             pickle.dump(model, open(modelo_path, "wb"))
             st.success(f"✅ Modelo entrenado con {len(X)} imágenes etiquetadas manualmente.")
-            
+
             df_train = pd.DataFrame({"Imagen": [p.name for p,_ in train_data],
                                      "Patrón asignado": y})
             st.dataframe(df_train)
 
+            # 💾 OPCIÓN DE DESCARGA Y GUARDADO LOCAL
             with open(modelo_path, "rb") as f:
-                st.download_button("💾 Descargar modelo entrenado (.pkl)",
-                                   f, file_name="modelo_patrones_jd121.pkl",
-                                   mime="application/octet-stream")
+                st.download_button(
+                    label="💾 Descargar modelo entrenado (.pkl)",
+                    data=f,
+                    file_name="modelo_patrones_jd121.pkl",
+                    mime="application/octet-stream"
+                )
+
+            st.info("""
+            El modelo se guardó localmente en el servidor y también podés descargarlo 
+            con el botón anterior para usarlo más adelante en otra sesión.
+            """)
+
+# ========= OPCIÓN DE CARGA DE MODELO GUARDADO =========
+st.header("📂 Cargar modelo previamente guardado")
+uploaded_model = st.file_uploader("Cargar archivo de modelo (.pkl)", type=["pkl"])
+if uploaded_model:
+    modelo_path = Path("modelo_cargado.pkl")
+    modelo_path.write_bytes(uploaded_model.read())
+    st.success("✅ Modelo cargado correctamente. Ya podés clasificar nuevas imágenes.")
 
 # ========= CLASIFICACIÓN =========
-st.header("📈 Clasificación y diagnóstico de estabilidad")
+st.header("📈 Clasificar imagen con el modelo activo")
 uploaded_pred = st.file_uploader("Cargar imagen para clasificación (.png o .jpg)", type=["png","jpg"])
 
 if uploaded_pred and modelo_path.exists():
@@ -128,6 +145,7 @@ if uploaded_pred and modelo_path.exists():
     feats, f_names = extraer_features(x, yv)
     pred = model.predict([feats])[0]
     prob = np.max(model.predict_proba([feats]))
+
     st.success(f"📊 Patrón detectado (JD 1–121): **{pred}** — Probabilidad: {prob:.2f}")
 
     fig, ax = plt.subplots(figsize=(8,4))
@@ -137,34 +155,3 @@ if uploaded_pred and modelo_path.exists():
     ax.set_xlabel("Día Juliano"); ax.set_ylabel("Emergencia relativa")
     ax.set_title(f"Clasificación principal: {pred} (prob={prob:.2f})")
     st.pyplot(fig)
-
-    # -------- Diagnóstico --------
-    st.subheader("🧭 Diagnóstico de estabilidad (JD 60–121)")
-    cortes = [60, 90, 105, 121]
-    resultados = []
-    for c in cortes:
-        mask = (x >= 1) & (x <= c)
-        feats_c, _ = extraer_features(x[mask], yv[mask])
-        pred_c = model.predict([feats_c])[0]
-        prob_c = np.max(model.predict_proba([feats_c]))
-        resultados.append((c, pred_c, prob_c))
-    df_diag = pd.DataFrame(resultados, columns=["JD_final","Patrón","Probabilidad"])
-    st.dataframe(df_diag.style.format({"Probabilidad":"{:.2f}"}))
-
-    fig2, ax2 = plt.subplots(figsize=(8,4))
-    ax2.plot(df_diag["JD_final"], df_diag["Probabilidad"], "o-", color="royalblue", lw=2)
-    for i,row in df_diag.iterrows():
-        ax2.text(row["JD_final"], row["Probabilidad"]+0.02, row["Patrón"], ha="center", fontsize=9)
-    ax2.axhline(0.75, color="green", linestyle="--", lw=1, alpha=0.6, label="Alta certeza (≥0.75)")
-    ax2.axhline(0.45, color="orange", linestyle="--", lw=1, alpha=0.5, label="Media (≥0.45)")
-    ax2.set_xlabel("JD límite usado para clasificación")
-    ax2.set_ylabel("Probabilidad")
-    ax2.set_title("Evolución temporal de la clasificación (1 ene → 1 may)")
-    ax2.legend(); ax2.grid(alpha=0.3)
-    st.pyplot(fig2)
-
-# ========= LIMPIAR =========
-if st.sidebar.button("🧹 Borrar modelo entrenado"):
-    if modelo_path.exists():
-        modelo_path.unlink()
-        st.sidebar.warning("🗑️ Modelo eliminado.")
