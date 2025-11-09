@@ -187,22 +187,6 @@ if uploaded:
 else:
     st.info("📂 Cargá una imagen con eje X en días julianos (0–300).")
 
-    # ========= EXPORTAR Y MOSTRAR RESULTADOS =========
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    row = pd.DataFrame([[fname, tipo, prob, nivel, modo_ventana, mean_sep, hmean, hmax, ts]],
-                       columns=["imagen", "tipo", "probabilidad", "certeza", "ventana", 
-                                "sep_media_días", "altura_media", "altura_max", "fecha"])
-
-    # Guardar en CSV
-    if CSV_PATH.exists():
-        df_old = pd.read_csv(CSV_PATH)
-        df_new = pd.concat([df_old, row], ignore_index=True)
-    else:
-        df_new = row
-    df_new.to_csv(CSV_PATH, index=False)
-
-    st.success(f"✅ Clasificación guardada en {CSV_PATH.name}")
-
     # ========= MOSTRAR TABLA DE RESULTADOS =========
     st.subheader("📋 Resultados recientes")
     st.dataframe(
