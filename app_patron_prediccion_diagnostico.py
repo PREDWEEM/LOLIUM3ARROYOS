@@ -1,151 +1,170 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy.interpolate import interp1d
-import streamlit as st
+import altair as alt
 
-# Título de la aplicación
-st.title("Análisis de Patrones de Emergencia Relativa")
+st.title("Análisis de series de emergencia relativa")
 
-# Instrucciones al usuario
-st.markdown(
-    "Seleccione uno o varios archivos Excel con datos de emergencia relativa. "
-    "El script unificará los formatos (diario/semanal), calculará el área bajo la curva (AUC) y clasificará el patrón de emergencia."
-)
+st.markdown("""
+Suba uno o varios archivos Excel, cada uno con una serie de emergencia relativa (día juliano en la primera columna y valor en la segunda). 
+La aplicación detectará automáticamente el tipo de serie (diaria relativa vs. semanal/acumulada), 
+generará la curva acumulada normalizada, calculará métricas (AUC total, AUC hasta día 121, proporción al día 121) 
+y clasificará cada serie como **CONCENTRADO** o **DISPERSO** según el umbral seleccionado.
+""")
 
-# Carga de archivos Excel
-archivos = st.file_uploader("Suba los archivos Excel de datos", type=["xlsx"], accept_multiple_files=True)
-
-# Lista para recopilar resultados
-resultados = []
+# Paso 1: Carga de archivos Excel (múltiples)
+archivos = st.file_uploader("Cargar archivos Excel", type=["xlsx"], accept_multiple_files=True)
+umbral = st.slider("Umbral para clasificación (CONCENTRADO vs DISPERSO)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
 
 if archivos:
+    resultados = []  # lista para guardar métricas de cada archivo
+    curvas_data = []  # para datos de curvas para graficar (formato largo)
+    
     for archivo in archivos:
-        # Leer datos del Excel (asumiendo dos columnas: Día y Valor de emergencia relativa)
+        nombre = archivo.name
+        # Leer el Excel. Asumimos dos columnas: dia juliano y valor
         try:
             df = pd.read_excel(archivo, header=None)
         except Exception as e:
-            st.error(f"Error al leer {archivo.name}: {e}")
+            st.error(f"❌ No se pudo leer {nombre}: {e}")
             continue
-
-        # Asignar nombres de columnas para claridad
-        df.columns = ["Dia", "Valor"]
-        # Si la primera fila parece ser cabecera textual, intentar recargar sin header
-        if isinstance(df.loc[0, "Dia"], str) or isinstance(df.loc[0, "Valor"], str):
-            df = pd.read_excel(archivo, header=0)
-            df.columns = ["Dia", "Valor"]
-
-        # Extraer arrays de días y valores
-        dias = df["Dia"].to_numpy()
-        valores = df["Valor"].to_numpy()
-
-        # Asegurarse de que el día 1 esté incluido para iniciar en 0 acumulado
-        if dias[0] != 1:
-            # Insertar día 1 con valor 0 al inicio si falta
-            dias = np.insert(dias, 0, 1)
-            valores = np.insert(valores, 0, 0.0)
-
-        # Identificar formato de los datos (diario vs semanal/porcentual)
-        formato_diario = valores.sum() < 2  # True si la sumatoria es menor a 2 (fracción diaria)
-        # Convertir a fracción si son porcentajes (valores mayores a 1 sugieren porcentajes)
-        if not formato_diario and np.nanmax(valores) > 1:
-            valores = valores / 100.0  # convertir porcentajes a fracción (0-1)
-
-        # Obtener serie acumulada diaria
-        if formato_diario:
-            # Datos diarios de fracción: sumamos acumulativamente
-            acumulado = np.nancumsum(valores)
-        else:
-            # Datos semanales/porcentuales:
-            # Verificar si la serie es acumulada (monótona) o incremental (no monótona)
-            if np.all(np.diff(valores[~np.isnan(valores)]) >= 0):
-                # Monótono no decreciente: asumimos que ya es acumulado relativo
-                acumulado_puntos = valores.copy()
-            else:
-                # No monótono: asumimos que son incrementos relativos -> acumulamos
-                acumulado_puntos = np.nancumsum(valores)
-            # Interpolación a días si los puntos no son diarios
-            intervalo_dias = np.diff(dias)
-            if np.nanmin(intervalo_dias) > 1:
-                # Crear función de interpolación lineal sobre los puntos acumulados
-                f_interp = interp1d(dias, acumulado_puntos, kind="linear", fill_value="extrapolate")
-                # Generar rango diario desde el primer hasta el último día registrado
-                dias_interp = np.arange(int(dias.min()), int(dias.max()) + 1)
-                acumulado = f_interp(dias_interp)
-                dias = dias_interp  # actualizar días a diarios
-            else:
-                # Si ya hay datos diarios (posiblemente ya interpolados previamente)
-                acumulado = acumulado_puntos
-
-        # Normalizar la curva acumulada a escala 0-1 dividiendo por el total anual (máximo acumulado)
-        max_acumulado = np.nanmax(acumulado)
-        if max_acumulado == 0 or np.isnan(max_acumulado):
-            # Evitar división por cero; si no hay datos, saltar serie
-            st.warning(f"La serie {archivo.name} no contiene datos válidos de emergencia.")
+        
+        # Asegurar que tenemos dos columnas
+        if df.shape[1] < 2:
+            st.warning(f"El archivo {nombre} no tiene dos columnas, se ignora.")
             continue
-        acumulado_normalizado = acumulado / max_acumulado
-
-        # Asegurarse de que el array de días y acumulado_normalizado tengan el mismo tamaño (por seguridad)
-        if len(dias) != len(acumulado_normalizado):
-            dias = np.linspace(dias.min(), dias.max(), num=len(acumulado_normalizado))
-            # (En la mayoría de casos no será necesario este ajuste si la interpolación se realizó correctamente)
-
-        # Calcular AUC total usando regla del trapecio
-        auc_total = np.trapz(acumulado_normalizado, dias)
-        # Calcular AUC hasta día 121 (o hasta el último día si el rango acaba antes)
-        dia_corte = 121
-        if dia_corte <= dias.min():
-            auc_hasta_121 = 0.0
-            prop_acum_121 = 0.0
-        elif dia_corte >= dias.max():
-            # Si el corte supera el último día de datos, integrar hasta el final
-            auc_hasta_121 = auc_total
-            prop_acum_121 = 1.0  # ya está completo para esa fecha (normalizado)
+        
+        # Renombrar columnas para claridad
+        df = df.iloc[:, :2]  # tomar solo las dos primeras columnas si hubiera extras
+        df.columns = ["dia", "valor"]
+        
+        # Paso 2: Determinar tipo de serie
+        suma_valores = df["valor"].sum(skipna=True)
+        es_diaria = False
+        # criterio: nombre del archivo contiene '2023', '2024' o '2025' OR suma ~ 1
+        if any(str(year) in nombre for year in [2023, 2024, 2025]):
+            es_diaria = True
+        if suma_valores >= 0.95 and suma_valores <= 1.05:
+            # La suma está aproximadamente en 1 (±5%)
+            es_diaria = True
+        
+        if es_diaria:
+            # Serie diaria relativa: aplicar cumsum para obtener acumulada
+            df_sorted = df.sort_values("dia")
+            df_sorted["acumulado"] = df_sorted["valor"].cumsum()
         else:
-            # Encontrar índice correspondiente (o interpolar) para el día 121
-            if dia_corte in dias:
-                idx121 = np.where(dias == dia_corte)[0][0]
-                # Integración hasta día 121 inclusive
-                auc_hasta_121 = np.trapz(acumulado_normalizado[:idx121+1], dias[:idx121+1])
-                prop_acum_121 = acumulado_normalizado[idx121]
+            # No es diaria relativa (serie semanal o valores absolutos)
+            # Verificar si la serie ya es acumulada (monótona no decreciente)
+            df_sorted = df.sort_values("dia")
+            valores = df_sorted["valor"].values
+            # Chequear monotonicidad (permitiendo tolerancia pequeña para flotantes)
+            diffs = np.diff(valores)
+            if np.all(diffs >= -1e-9):  # si todas las diferencias son >= 0 (monótono creciente)
+                # Ya es acumulada
+                df_sorted["acumulado"] = df_sorted["valor"]
             else:
-                # Interpolar valor en día 121 si no está exactamente en los datos
-                valor_121 = float(np.interp(dia_corte, dias, acumulado_normalizado))
-                # Integrar área hasta 121: integrar hasta el día anterior y añadir el trapecio parcial
-                idx_below = np.searchsorted(dias, dia_corte) - 1
-                auc_hasta_prev = np.trapz(acumulado_normalizado[:idx_below+1], dias[:idx_below+1])
-                # Área del trapecio desde el último día conocido hasta el día 121
-                x0, y0 = dias[idx_below], acumulado_normalizado[idx_below]
-                x1, y1 = dia_corte, valor_121
-                auc_hasta_121 = auc_hasta_prev + (y0 + y1) / 2 * (x1 - x0)
-                prop_acum_121 = valor_121
-
-        # Clasificación del patrón según proporción acumulada al día 121
-        if prop_acum_121 >= 0.5:
-            clasificacion = "CONCENTRADO"
+                # Es semanal/diaria absoluta: aplicar cumsum para obtener acumulado
+                df_sorted["acumulado"] = df_sorted["valor"].cumsum()
+        
+        # Paso 3: Interpolar a diario (si la secuencia de días tiene huecos)
+        # Asegurar que el día 1 está presente; si falta, agregar día 1 con acumulado 0
+        if df_sorted["dia"].iloc[0] > 1:
+            df_sorted = pd.concat([
+                pd.DataFrame({"dia": [1], "acumulado": [0.0]}),
+                df_sorted
+            ], ignore_index=True)
+        # Crear índice completo de días hasta el último día o 365 (lo que sea mayor)
+        ultimo_dia = int(df_sorted["dia"].max())
+        # Consideramos hasta día 365 por seguridad (año completo)
+        if ultimo_dia < 365:
+            ultimo_dia = 365
+        # Reindexar la serie acumulada con todos los días hasta ultimo_dia
+        df_indexed = df_sorted.set_index("dia")["acumulado"]
+        df_indexed = df_indexed.reindex(range(1, ultimo_dia+1))
+        # Interpolar valores faltantes linealmente entre datos existentes
+        df_interpolated = df_indexed.interpolate(method='linear')
+        # Rellenar cualquier valor posterior al último dato conocido con el último valor (ffill)
+        df_interpolated = df_interpolated.ffill()
+        # Rellenar valores antes del primer dato conocido (si aplica) con 0 (bfill)
+        df_interpolated = df_interpolated.bfill().fillna(0)
+        
+        # Paso 4: Normalizar al rango [0,1]
+        max_val = df_interpolated.iloc[-1]
+        if max_val == 0:
+            # Si la serie está toda en cero (caso extremo sin eventos), saltamos
+            norm_series = df_interpolated
         else:
-            clasificacion = "DISPERSO"
-
-        # Almacenar resultados de esta serie (usando el nombre del archivo sin extensión como identificador)
-        nombre_serie = archivo.name.replace(".xlsx", "")
+            norm_series = df_interpolated / max_val
+        
+        # Asegurarse que la serie llega hasta día 365 (inclusive)
+        if norm_series.index.max() < 365:
+            # Extender hasta 365 con el último valor (que sería 1 si max_val>0)
+            last_val = norm_series.iloc[-1]
+            norm_series = norm_series.reindex(range(1, 366), fill_value=last_val)
+        
+        # Paso 5: Calcular AUC total, AUC hasta día 121, proporción día 121
+        y_values = norm_series.values  # valores de la curva normalizada
+        x_days = norm_series.index.values
+        # Area total bajo la curva usando método trapezoidal
+        auc_total = float(np.trapz(y_values, x_days))
+        # Si el día 121 excede los datos, asegurarse de no pasarse
+        max_day = norm_series.index.max()
+        day121 = 121 if 121 <= max_day else max_day
+        auc_121 = float(np.trapz(norm_series.loc[1:day121].values, norm_series.loc[1:day121].index.values))
+        # Valor acumulado al día 121
+        # Si la serie no llega al 121 (muy improbable), tomar último
+        if day121 in norm_series.index:
+            prop_121 = float(norm_series.loc[day121])
+        else:
+            prop_121 = float(norm_series.iloc[-1])
+        # Clasificación según umbral
+        clasificacion = "CONCENTRADO" if prop_121 >= umbral else "DISPERSO"
+        
+        # Guardar resultados para la tabla
         resultados.append({
-            "Serie": nombre_serie,
-            "AUC_total": round(auc_total, 4),
-            "AUC_dia121": round(auc_hasta_121, 4),
-            "Proporción_121": round(prop_acum_121, 4),
-            "Patrón": clasificacion
+            "Archivo": nombre,
+            "AUC_total": auc_total,
+            "AUC_dia121": auc_121,
+            "Prop_121": prop_121,
+            "Clasificación": clasificacion
         })
-
-    # Mostrar resultados en tabla
-    resultados_df = pd.DataFrame(resultados)
-    st.subheader("Resultados por Serie")
-    st.dataframe(resultados_df)
-
-    # Botón de descarga de resultados en CSV
-    csv_data = resultados_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Descargar resultados en CSV",
-        data=csv_data,
-        file_name="resultados_emergencia.csv",
-        mime="text/csv"
-    )
-
+        
+        # Preparar datos para graficar (acumulada normalizada)
+        # Usamos nombre del archivo sin extensión como etiqueta de serie
+        serie_label = nombre.rsplit('.', 1)[0]
+        df_plot = pd.DataFrame({
+            "dia": norm_series.index.values,
+            "acumulado_norm": norm_series.values,
+            "serie": serie_label
+        })
+        curvas_data.append(df_plot)
+    
+    if resultados:
+        # Combinar datos de todas las curvas para graficar
+        curvas_df = pd.concat(curvas_data, ignore_index=True)
+        # Paso 6: Gráfico interactivo de curvas acumuladas
+        chart = alt.Chart(curvas_df).mark_line().encode(
+            x=alt.X("dia:Q", title="Día del año"),
+            y=alt.Y("acumulado_norm:Q", title="Fracción acumulada"),
+            color=alt.Color("serie:N", title="Serie (Archivo/Año)"),
+            tooltip=["serie:N", "dia:Q", alt.Tooltip("acumulado_norm:Q", format=".2f")]
+        ).properties(title="Curvas acumuladas normalizadas por año", width=700, height=400)
+        st.altair_chart(chart, use_container_width=True)
+        
+        # Paso 7: Mostrar tabla de resultados
+        resultados_df = pd.DataFrame(resultados)
+        # Formato: limitar a 3 decimales las columnas numéricas para visualización
+        resultados_df_display = resultados_df.copy()
+        resultados_df_display["AUC_total"] = resultados_df_display["AUC_total"].map(lambda x: f"{x:.2f}")
+        resultados_df_display["AUC_dia121"] = resultados_df_display["AUC_dia121"].map(lambda x: f"{x:.2f}")
+        resultados_df_display["Prop_121"] = resultados_df_display["Prop_121"].map(lambda x: f"{x:.3f}")
+        st.subheader("Resultados por archivo")
+        st.dataframe(resultados_df_display, use_container_width=True)
+        
+        # Paso 8: Botón de descarga de resultados en CSV
+        csv_data = resultados_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Descargar tabla CSV", data=csv_data, file_name="resultados_emergencia.csv", mime="text/csv")
+    else:
+        st.warning("No se generaron resultados. Verifique que los archivos tengan datos válidos.")
+else:
+    st.info("⬆ Por favor, cargue uno o varios archivos Excel para comenzar el análisis.")
