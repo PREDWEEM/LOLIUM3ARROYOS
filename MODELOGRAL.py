@@ -7,6 +7,19 @@ import streamlit as st
 st.title("Visualizador de Emergencia Acumulada Histórica")
 st.write("Seleccione un día del año para ver el promedio histórico de la emergencia acumulada, su incertidumbre y la probabilidad de haber superado el 50% de la emergencia anual para esa fecha. También se muestra la comparación de las curvas históricas normalizadas.")
 
+
+# Encabezado
+st.title("Visualizador de Emergencia Acumulada Histórica")
+
+# Slider para seleccionar el día juliano
+selected_day = st.slider(
+    label="Selecciona el día juliano",
+    min_value=1,
+    max_value=365,
+    value=180  # valor por defecto
+)
+
+
 # --- Carga y preparación de datos históricos ---
 
 # Años disponibles (según archivos proporcionados), excluyendo 2010 y 2015
