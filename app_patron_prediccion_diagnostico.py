@@ -1,7 +1,6 @@
-
 # -*- coding: utf-8 -*-
 # 🌾 PREDWEEM — Clasificación CONCENTRADA / EXTENDIDA (≥50 % AUC antes JD121)
-# con calibración manual y guardado persistente por imagen
+# con calibración MANUAL mediante SLIDER sobre el gráfico
 
 import os, cv2
 import numpy as np
@@ -10,24 +9,20 @@ import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 import streamlit as st
 
-# ===== CONFIGURACIÓN GENERAL =====
-st.set_page_config(page_title="PREDWEEM — Calibración manual con guardado", layout="wide")
-st.title("🌾 Clasificación de patrones — Calibración manual persistente (≥50 % antes JD 121)")
+# ===== CONFIGURACIÓN =====
+st.set_page_config(page_title="PREDWEEM — Clasificación con calibración visual", layout="wide")
+st.title("🌾 Clasificación de patrones — Calibración manual interactiva del eje X (slider sobre gráfico)")
 
 st.markdown("""
-Permite **calibrar manualmente** el eje X (JD mínimo y máximo) para cada imagen y **guardar los valores por año**.  
-En ejecuciones futuras, las calibraciones se aplican automáticamente.
+Ajustá **visualmente** la escala temporal (JD mínimo / máximo) directamente sobre cada gráfico.  
+- Mové los *sliders* para que las líneas rojas coincidan con los límites del eje X real.  
+- Observá en tiempo real cómo cambia la calibración.  
+- Luego el sistema clasifica según el **AUC (≥50 % antes JD121)**.
 """)
-
-# Archivo local de calibración
-CALIB_FILE = "calibracion_patrones.csv"
-if os.path.exists(CALIB_FILE):
-    df_calib = pd.read_csv(CALIB_FILE)
-else:
-    df_calib = pd.DataFrame(columns=["imagen", "JD_min", "JD_max"])
 
 JD_CUTOFF = 121
 EPS = 1e-9
+CALIB_FILE = "calibracion_patrones.csv"
 
 # ===== FUNCIONES =====
 def read_image(file):
@@ -79,7 +74,7 @@ def classify_auc50(x, y):
     prob = round(abs(share - 0.50) * 1.5 + 0.5, 2)
     return patt, prob, dict(share=share, total=total, col=col)
 
-# ===== PARÁMETROS GLOBALES =====
+# ===== PANEL DE AJUSTES =====
 with st.sidebar:
     st.header("🧭 Detección y suavizado")
     thr_dark = st.slider("Umbral de oscuridad", 0, 255, 70)
@@ -88,6 +83,13 @@ with st.sidebar:
     win = st.slider("Ventana suavizado", 3, 51, 9, step=2)
     poly = st.slider("Orden polinomio", 1, 5, 2)
     normalize_area = st.checkbox("Normalizar área total (AUC = 1)", True)
+    auto_save = st.checkbox("Guardar calibraciones automáticamente", True)
+
+# ===== LEER CALIBRACIONES =====
+if os.path.exists(CALIB_FILE):
+    df_calib = pd.read_csv(CALIB_FILE)
+else:
+    df_calib = pd.DataFrame(columns=["imagen", "JD_min", "JD_max"])
 
 # ===== PROCESAMIENTO =====
 files = st.file_uploader("📤 Subí las imágenes (PNG/JPG)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
@@ -99,39 +101,46 @@ for f in files:
     st.subheader(f"🖼️ {f.name}")
     try:
         img = read_image(f)
-        st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Imagen original", use_container_width=True)
         xs, ys, h, w = extract_curve(img, thr_dark, canny_low, canny_high)
         if xs.size == 0:
-            st.error("No se detectó la curva. Ajustá el umbral o los valores Canny.")
+            st.error("⚠️ No se detectó la curva. Ajustá umbral o filtros Canny.")
             continue
 
-        # Buscar calibración guardada
+        # Calibración previa si existe
         prev = df_calib[df_calib["imagen"] == f.name]
         if not prev.empty:
             jd_min_def, jd_max_def = int(prev["JD_min"].iloc[0]), int(prev["JD_max"].iloc[0])
-            st.success(f"Calibración previa encontrada: JD {jd_min_def}–{jd_max_def}")
         else:
             jd_min_def, jd_max_def = 0, 365
 
-        # === CALIBRACIÓN MANUAL ===
-        st.markdown("### Calibración del eje X")
-        jd_min = st.number_input(f"JD mínimo visible ({f.name})", min_value=0, max_value=365, value=jd_min_def, step=5)
-        jd_max = st.number_input(f"JD máximo visible ({f.name})", min_value=50, max_value=400, value=jd_max_def, step=5)
+        # === SLIDER DE CALIBRACIÓN ===
+        st.markdown("### 🔧 Calibración visual del eje X")
+        fig_cal, ax_cal = plt.subplots(figsize=(6, 3))
+        ax_cal.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        ax_cal.plot(xs, ys, color='yellow', lw=1)
+        st.pyplot(fig_cal, clear_figure=True)
 
-        if st.button(f"💾 Guardar calibración ({f.name})"):
+        jd_min, jd_max = st.slider(f"Escala de días julianos para {f.name}",
+                                   min_value=0, max_value=400,
+                                   value=(jd_min_def, jd_max_def), step=5)
+
+        # === VISUALIZAR CON LÍNEAS DE CALIBRACIÓN ===
+        fig_lines, ax_lines = plt.subplots(figsize=(6, 3))
+        ax_lines.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        ax_lines.axvline((jd_min / 400) * w, color='red', ls='--', label=f"JD {jd_min}")
+        ax_lines.axvline((jd_max / 400) * w, color='red', ls='--', label=f"JD {jd_max}")
+        ax_lines.plot(xs, ys, color='yellow', lw=1)
+        ax_lines.legend(fontsize=7)
+        ax_lines.set_title("Curva y límites de calibración (rojo)")
+        st.pyplot(fig_lines, clear_figure=True)
+
+        # Guardar calibración
+        if auto_save:
             df_calib = df_calib[df_calib["imagen"] != f.name]
             df_calib.loc[len(df_calib)] = [f.name, jd_min, jd_max]
             df_calib.to_csv(CALIB_FILE, index=False)
-            st.success("Calibración guardada correctamente ✅")
 
-        # === VISUALIZACIÓN DE CURVA ===
-        fig_c, ax_c = plt.subplots(figsize=(6, 3))
-        ax_c.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        ax_c.plot(xs, ys, color='yellow', lw=1)
-        ax_c.set_title("Curva detectada (línea amarilla)")
-        st.pyplot(fig_c, clear_figure=True)
-
-        # === CONVERSIÓN A JD ===
+        # === CLASIFICACIÓN ===
         x, y = to_series(xs, ys, h, jd_min, jd_max, w)
         x, y = restrict(x, y)
         x, y = regularize(x, y)
@@ -152,7 +161,7 @@ for f in files:
         })
         series[year] = (x, y, info["col"])
 
-        st.success(f"**{year}** → {patt} ({prob:.2f}) — {info['share']*100:.1f}% del área antes del JD 121")
+        st.success(f"**{year}** → {patt} ({prob:.2f}) — {info['share']*100:.1f}% del área antes del JD121")
 
     except Exception as e:
         st.error(f"Error procesando {f.name}: {e}")
@@ -160,10 +169,10 @@ for f in files:
 # ===== RESULTADOS =====
 if rows:
     df = pd.DataFrame(rows)
-    st.subheader("📊 Resultados (AUC ≥50 % antes JD 121)")
+    st.subheader("📊 Resultados (AUC ≥50 % antes JD121)")
     st.dataframe(df, use_container_width=True)
     st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                       file_name="patrones_auc50_calibrado_manual_mem.csv")
+                       file_name="patrones_auc50_slider.csv")
 
     fig, ax = plt.subplots(figsize=(9, 4))
     for y, (xx, yy, col) in series.items():
@@ -181,5 +190,6 @@ st.markdown("""
 | **🟢 CONCENTRADO** | ≥ 50 % del área total antes del JD 121 | Emergencia temprana y sincronizada |
 | **🟠 EXTENDIDO** | < 50 % del área total antes del JD 121 | Emergencia prolongada o escalonada |
 
-📁 Las calibraciones se guardan en `calibracion_patrones.csv` y se aplican automáticamente en sesiones futuras.
+> Las líneas **rojas** del gráfico marcan los límites de calibración JD.  
+> Los valores ajustados se guardan automáticamente en `calibracion_patrones.csv`.
 """)
