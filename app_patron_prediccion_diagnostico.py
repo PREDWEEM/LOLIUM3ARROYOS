@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificación CONCENTRADA / EXTENDIDA (≥98% AUC antes JD121)
+# 🌾 PREDWEEM — Clasificación CONCENTRADA / EXTENDIDA (≥50% AUC antes JD121)
 
 import os, cv2
 import numpy as np
@@ -9,14 +9,14 @@ from scipy.signal import savgol_filter
 import streamlit as st
 
 # =============== CONFIGURACIÓN ===============
-st.set_page_config(page_title="PREDWEEM — Clasificación por AUC (≥98% antes JD121)", layout="wide")
+st.set_page_config(page_title="PREDWEEM — Clasificación por AUC (≥50% antes JD121)", layout="wide")
 st.title("🌾 Clasificación de patrones — Basada en el área bajo la curva (AUC ≤ JD121)")
 
 st.markdown("""
 Analiza las curvas de emergencia entre **1 de enero y 1 de mayo (JD 1–121)**.  
 Clasifica el patrón como:  
-- **🟢 CONCENTRADO** → si el área acumulada (AUC) antes del JD 121 ≥ **98 %** del total.  
-- **🟠 EXTENDIDO** → si el área acumulada < 98 % del total.
+- **🟢 CONCENTRADO** → si el área acumulada (AUC) antes del JD 121 ≥ 50 % del total.  
+- **🟠 EXTENDIDO** → si el área acumulada < 50 % del total.
 """)
 
 # =============== CONTROLES ===============
@@ -38,7 +38,7 @@ with st.sidebar:
 JD_CUTOFF = 121
 EPS = 1e-9
 
-# =============== FUNCIONES AUXILIARES ===============
+# =============== FUNCIONES ==================
 def read_image(file):
     data = file.read() if hasattr(file, "read") else file
     return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
@@ -82,15 +82,15 @@ def smooth(y,win,poly):
 
 def auc(y): return float(np.trapz(y))
 
-# =============== CLASIFICACIÓN POR AUC (98%) ===============
-def classify_auc98(x,y):
+# =============== CLASIFICACIÓN 50% ===============
+def classify_auc50(x,y):
     total=auc(y)
     share_before121 = auc(y[x<=121])/(total+EPS)
-    if share_before121>=0.98:
+    if share_before121>=0.50:
         patt, col="CONCENTRADO","green"
     else:
         patt, col="EXTENDIDO","orange"
-    prob=round(abs(share_before121-0.98)*1.2+0.5,2)
+    prob=round(abs(share_before121-0.50)*1.5+0.5,2)
     return patt, prob, dict(share=share_before121,total=total,col=col)
 
 # =============== PROCESAMIENTO ===============
@@ -110,7 +110,7 @@ for f in files:
         x,y = regularize(x,y)
         y = smooth(y,win,poly)
         if normalize_area and auc(y)>0: y/=auc(y)
-        patt,prob,info = classify_auc98(x,y)
+        patt,prob,info = classify_auc50(x,y)
         year = os.path.splitext(f.name)[0]
         rows.append({
             "año":year,
@@ -125,10 +125,10 @@ for f in files:
 
 # =============== RESULTADOS ===============
 df=pd.DataFrame(rows)
-st.subheader("Resultados (criterio ≥98 % AUC antes JD 121)")
+st.subheader("Resultados (criterio ≥50 % AUC antes JD 121)")
 st.dataframe(df,use_container_width=True)
 st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                   file_name="patrones_auc98.csv")
+                   file_name="patrones_auc50.csv")
 
 # =============== GRÁFICO ==================
 fig,ax=plt.subplots(figsize=(9,4))
@@ -145,6 +145,6 @@ st.markdown("""
 ### 🌾 Criterio de clasificación
 | Categoría | Condición | Interpretación agronómica |
 |------------|------------|---------------------------|
-| **🟢 CONCENTRADO** | ≥ 98 % del área total antes del JD 121 | Emergencia casi totalmente temprana y sincronizada |
-| **🟠 EXTENDIDO** | < 98 % del área total antes del JD 121 | Emergencia prolongada, con actividad tardía |
+| **🟢 CONCENTRADO** | ≥ 50 % del área total antes del JD 121 | Emergencia predominantemente temprana |
+| **🟠 EXTENDIDO** | < 50 % del área total antes del JD 121 | Emergencia más tardía o escalonada |
 """)
