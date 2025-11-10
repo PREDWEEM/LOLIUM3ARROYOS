@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificación CONCENTRADO/EXTENDIDO con calibración por clics (Plotly)
-# Zoom interactivo + guardado automático de calibración
-# Compatible con entornos restringidos (Streamlit Cloud)
+# 🌾 PREDWEEM — Calibración visual con clics + JD reales
+# Clasificación CONCENTRADO / EXTENDIDO (AUC ≥ 50 % antes JD121)
+# Zoom + desplazamiento + líneas guía
 
 import streamlit as st
 
@@ -16,12 +16,7 @@ except ImportError:
     ```bash
     pip install streamlit-plotly-events
     ```
-
-    Si estás en **Streamlit Cloud**, agregala a tu archivo `requirements.txt`:
-    ```
-    streamlit-plotly-events
-    ```
-    Luego reiniciá la app.
+    Si usás **Streamlit Cloud**, agregala en tu archivo `requirements.txt`.
     """)
     st.stop()
 
@@ -34,21 +29,20 @@ import plotly.graph_objects as go
 from scipy.signal import savgol_filter
 
 # ====== CONFIGURACIÓN ======
-st.set_page_config(page_title="PREDWEEM — Calibración por clics (zoom)", layout="wide")
-st.title("🌾 Clasificación de patrones — Calibración visual por clics con zoom interactivo")
+st.set_page_config(page_title="PREDWEEM — Calibración JD real", layout="wide")
+st.title("🌾 Clasificación de patrones — Calibración visual con JD reales")
 
 st.markdown("""
 🧭 **Modo de uso:**
-1. Subí una o varias imágenes (gráficos de emergencia).  
-2. En cada gráfico, **hacé 2 clics** → primero en el **JD mínimo**, luego en el **JD máximo**.  
-3. Podés **hacer zoom o desplazarte** antes de marcar (rectángulo o rueda del mouse).  
-4. La app guarda automáticamente la calibración (`calibracion_patrones_clicks.csv`).  
-5. Clasifica el patrón según **AUC ≥ 50 % antes de JD 121**.
+1. Hacé **2 clics** sobre el gráfico (inicio y fin del eje X visible).  
+2. Luego ingresá los **valores reales de día juliano (JD)** correspondientes.  
+3. Verás **líneas rojas** en el gráfico indicando tus puntos seleccionados.  
+4. La app guardará la calibración en `calibracion_patrones_clicks.csv`.  
+5. Clasifica automáticamente según **AUC ≥ 50 % antes JD 121**.
 """)
 
 CALIB_FILE = "calibracion_patrones_clicks.csv"
 JD_CUTOFF = 121
-YEAR_JD_MAX = 365
 EPS = 1e-9
 
 # ====== FUNCIONES ======
@@ -69,14 +63,13 @@ def extract_curve(img_bgr, thr_dark, c_lo, c_hi):
             xs.append(x)
     return np.array(xs), np.array(ys), h, w
 
-def to_series(xs_px, ys_px, h, w, x_min_px, x_max_px):
-    jd_all = (xs_px / max(1, (w - 1))) * YEAR_JD_MAX
+def map_to_jd(xs_px, ys_px, h, x_min_px, x_max_px, jd_min, jd_max):
+    """Mapea píxeles → JD según puntos y valores reales."""
     y = (h - 1 - ys_px).astype(float)
     if y.max() > 0: y /= y.max()
-    jd_min = (x_min_px / max(1, (w - 1))) * YEAR_JD_MAX
-    jd_max = (x_max_px / max(1, (w - 1))) * YEAR_JD_MAX
-    mask = (jd_all >= jd_min) & (jd_all <= jd_max)
-    return jd_all[mask], y[mask], float(jd_min), float(jd_max)
+    jd = jd_min + (xs_px - x_min_px) * (jd_max - jd_min) / max(1, (x_max_px - x_min_px))
+    mask = (jd >= jd_min) & (jd <= jd_max)
+    return jd[mask], y[mask]
 
 def regularize(x, y):
     if x.size < 3: return np.array([]), np.array([])
@@ -102,8 +95,8 @@ def classify_auc50(x, y):
 def load_calib():
     if os.path.exists(CALIB_FILE):
         try: return pd.read_csv(CALIB_FILE)
-        except: return pd.DataFrame(columns=["imagen", "x_min_px", "x_max_px"])
-    return pd.DataFrame(columns=["imagen", "x_min_px", "x_max_px"])
+        except: return pd.DataFrame(columns=["imagen", "x_min_px", "x_max_px", "JD_min", "JD_max"])
+    return pd.DataFrame(columns=["imagen", "x_min_px", "x_max_px", "JD_min", "JD_max"])
 
 def save_calib(df): df.to_csv(CALIB_FILE, index=False)
 
@@ -122,10 +115,9 @@ with st.sidebar:
 files = st.file_uploader("📤 Subí imágenes (PNG/JPG)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 if not files: st.stop()
 df_calib = load_calib()
-
 rows, series = [], {}
 
-# ====== LOOP IMÁGENES ======
+# ====== LOOP ======
 for f in files:
     st.markdown("---")
     st.subheader(f"🖼️ {f.name}")
@@ -133,67 +125,71 @@ for f in files:
     img_bgr = read_image(f)
     xs, ys, h, w = extract_curve(img_bgr, thr_dark, canny_low, canny_high)
     if xs.size == 0:
-        st.error("⚠️ No se detectó la curva. Ajustá umbral o filtros Canny.")
+        st.error("⚠️ No se detectó la curva. Ajustá los filtros.")
         continue
-
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # ====== GRAFICO INTERACTIVO AMPLIADO CON ZOOM ======
+    # ====== GRÁFICO CON ZOOM ======
     fig = px.imshow(img_rgb)
     fig.update_xaxes(showticklabels=False, range=[0, w])
     fig.update_yaxes(showticklabels=False, range=[h, 0])
-    fig.add_trace(go.Scatter(
-        x=xs, y=ys,
-        mode="lines",
-        line=dict(color="yellow", width=2),
-        name="Curva detectada"
-    ))
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
+                             line=dict(color="yellow", width=2), name="Curva detectada"))
     fig.update_layout(
         title=dict(
-            text="🖱️ Hacé 2 clics: JD mínimo y JD máximo (podés hacer zoom o desplazarte)",
-            x=0.02, xanchor="left"
-        ),
+            text="🖱️ Hacé 2 clics (inicio y fin eje X visible). Podés hacer zoom antes.",
+            x=0.02, xanchor="left"),
         height=750,
         width=None,
         margin=dict(l=0, r=0, t=50, b=0),
-        dragmode="zoom",             # Zoom interactivo habilitado
+        dragmode="zoom",
         hovermode=False,
         xaxis=dict(fixedrange=False),
         yaxis=dict(fixedrange=False)
     )
 
-    clicks = plotly_events(
-        fig,
-        click_event=True,
-        hover_event=False,
-        select_event=False,
-        override_height=760,
-        override_width=None
-    )
+    clicks = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=760)
 
-    # ====== PROCESAR SELECCIÓN ======
     key = f"clicks_{f.name}"
     if key not in st.session_state: st.session_state[key] = []
     if clicks:
         for c in clicks:
-            if "x" in c: st.session_state[key].append(float(c["x"]))
+            if "x" in c:
+                st.session_state[key].append(float(c["x"]))
         st.session_state[key] = st.session_state[key][:2]
 
     sel = st.session_state[key]
     if len(sel) == 2:
         x_min_px, x_max_px = sorted(sel)
-        st.success(f"📍 Selección: x_min_px={int(x_min_px)} | x_max_px={int(x_max_px)}")
+        st.success(f"📍 Píxeles seleccionados: {int(x_min_px)} → {int(x_max_px)}")
     else:
         st.info("👉 Hacé 2 clics sobre el gráfico (mín y máx del eje X).")
         continue
 
+    # ====== VALORES JD REALES ======
+    cols = st.columns(2)
+    with cols[0]:
+        jd_min = st.number_input(f"Valor JD mínimo real ({f.name})", min_value=0.0, max_value=400.0, value=0.0, step=1.0)
+    with cols[1]:
+        jd_max = st.number_input(f"Valor JD máximo real ({f.name})", min_value=jd_min+1, max_value=400.0, value=365.0, step=1.0)
+
+    # Mostrar líneas guía en la imagen original
+    fig_lines = px.imshow(img_rgb)
+    fig_lines.update_xaxes(showticklabels=False, range=[0, w])
+    fig_lines.update_yaxes(showticklabels=False, range=[h, 0])
+    fig_lines.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="yellow", width=2)))
+    fig_lines.add_vline(x=x_min_px, line=dict(color="red", dash="dash"), annotation_text=f"JD {jd_min}")
+    fig_lines.add_vline(x=x_max_px, line=dict(color="red", dash="dash"), annotation_text=f"JD {jd_max}")
+    fig_lines.update_layout(height=400, margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig_lines, use_container_width=True)
+
     if auto_save:
         df_calib = df_calib[df_calib["imagen"] != f.name]
-        df_calib.loc[len(df_calib)] = [f.name, x_min_px, x_max_px]
+        df_calib.loc[len(df_calib)] = [f.name, x_min_px, x_max_px, jd_min, jd_max]
         save_calib(df_calib)
 
     # ====== CLASIFICACIÓN ======
-    x_jd, y_raw, jd_min, jd_max = to_series(xs, ys, h, w, x_min_px, x_max_px)
+    x_jd, y_raw = map_to_jd(xs, ys, h, x_min_px, x_max_px, jd_min, jd_max)
     xg, yg = regularize(x_jd, y_raw)
     yg = smooth(yg, win, poly)
     if normalize_area and auc(yg) > 0: yg /= auc(yg)
@@ -205,23 +201,21 @@ for f in files:
         "patrón": patt, "probabilidad": prob
     })
     series[year] = (xg, yg, info["col"])
-
-    st.success(f"**{year}** → {patt} ({prob:.2f}) — {info['share']*100:.1f}% del área antes de JD 121")
+    st.success(f"**{year}** → {patt} ({prob:.2f}) — {info['share']*100:.1f}% del área antes de JD121")
 
 # ====== RESULTADOS ======
 if rows:
     df = pd.DataFrame(rows)
-    st.subheader("📊 Resultados (AUC ≥ 50 % antes JD 121)")
+    st.subheader("📊 Resultados (AUC ≥ 50 % antes JD121)")
     st.dataframe(df, use_container_width=True)
     st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                       file_name="patrones_auc50_clicks.csv")
+                       file_name="patrones_auc50_clicks_valores_reales.csv")
 
     fig2, ax2 = plt.subplots(figsize=(9, 4))
     for y, (xx, yy, col) in series.items():
         ax2.plot(xx, yy, label=y, color=col)
     ax2.axvline(121, color="black", ls="--", lw=1)
-    ax2.set_xlabel("Día juliano (JD)")
+    ax2.set_xlabel("Día juliano (JD calibrado)")
     ax2.set_ylabel("Emergencia relativa")
     ax2.legend(ncol=6, fontsize=8)
     st.pyplot(fig2, clear_figure=True)
-
