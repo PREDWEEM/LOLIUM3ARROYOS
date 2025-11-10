@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador funcional por clics + JD reales (Zoom compatible)
-# Clasifica CONCENTRADO / EXTENDIDO según AUC ≥ 50 % antes JD 121
+# 🌾 PREDWEEM — Clasificador funcional con clics + JD reales (versión estable)
+# Compatible con Streamlit Cloud — Carga robusta de imágenes (PIL) + Clics funcionales
 
 import streamlit as st
 
@@ -13,28 +13,29 @@ except ImportError:
     ```bash
     pip install streamlit-plotly-events
     ```
-    Si usás Streamlit Cloud, agregala a `requirements.txt`.
+    Si usás Streamlit Cloud, agregala a tu `requirements.txt`.
     """)
     st.stop()
 
-import os, cv2
+import os, io, cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+from PIL import Image
 from scipy.signal import savgol_filter
 
 # ====== CONFIGURACIÓN ======
-st.set_page_config(page_title="PREDWEEM — Clasificación funcional por clics", layout="wide")
-st.title("🌾 Clasificación de patrones — Clics + JD reales (modo funcional)")
+st.set_page_config(page_title="PREDWEEM — Clasificación por clics (v2)", layout="wide")
+st.title("🌾 Clasificación de patrones — Clics + JD reales (versión estable)")
 
 st.markdown("""
 🧭 **Modo de uso:**
 1. Hacé **2 clics** sobre el gráfico (inicio y fin del eje X visible).  
-2. Ingresá los valores **reales de JD** para esos puntos.  
-3. Verás **líneas rojas** de referencia sobre el gráfico.  
+2. Ingresá los valores **reales de JD** correspondientes.  
+3. Verás **líneas rojas** que confirman la calibración.  
 4. La app clasifica automáticamente (AUC ≥ 50 % antes JD 121).  
-5. Los resultados se guardan en `calibracion_patrones_clicks.csv`.
+5. Descargá los resultados en CSV (`calibracion_patrones_clicks.csv`).
 """)
 
 CALIB_FILE = "calibracion_patrones_clicks.csv"
@@ -43,8 +44,19 @@ EPS = 1e-9
 
 # ====== FUNCIONES ======
 def read_image(file):
-    data = file.read() if hasattr(file, "read") else file
-    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    """Lectura robusta compatible con Streamlit Cloud"""
+    try:
+        if hasattr(file, "read"):
+            data = file.read()
+        else:
+            with open(file, "rb") as f:
+                data = f.read()
+        img_pil = Image.open(io.BytesIO(data)).convert("RGB")
+        img_np = np.array(img_pil)[:, :, ::-1]  # RGB→BGR
+        return img_np
+    except Exception as e:
+        st.error(f"❌ Error al cargar la imagen {getattr(file,'name',file)}: {e}")
+        return None
 
 def extract_curve(img_bgr, thr_dark, c_lo, c_hi):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -97,7 +109,7 @@ def save_calib(df): df.to_csv(CALIB_FILE, index=False)
 
 # ====== SIDEBAR ======
 with st.sidebar:
-    st.header("🎛️ Parámetros")
+    st.header("🎛️ Parámetros de detección")
     thr_dark = st.slider("Umbral de oscuridad", 0, 255, 70)
     canny_low = st.slider("Canny low", 0, 200, 30)
     canny_high = st.slider("Canny high", 50, 300, 120)
@@ -112,19 +124,22 @@ if not files: st.stop()
 df_calib = load_calib()
 rows, series = [], {}
 
-# ====== LOOP ======
+# ====== LOOP PRINCIPAL ======
 for f in files:
     st.markdown("---")
     st.subheader(f"🖼️ {f.name}")
 
     img_bgr = read_image(f)
+    if img_bgr is None:
+        continue
+
     xs, ys, h, w = extract_curve(img_bgr, thr_dark, canny_low, canny_high)
     if xs.size == 0:
         st.error("⚠️ No se detectó la curva. Ajustá los filtros.")
         continue
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # ====== GRÁFICO FUNCIONAL ======
+    # ====== GRÁFICO INTERACTIVO FUNCIONAL ======
     fig = go.Figure()
     fig.add_trace(go.Image(z=img_rgb))
     fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
@@ -132,10 +147,10 @@ for f in files:
     fig.update_xaxes(showticklabels=False, range=[0, w])
     fig.update_yaxes(showticklabels=False, range=[h, 0])
     fig.update_layout(
-        title="🖱️ Hacé 2 clics (inicio y fin eje X visible). Usá la toolbar para zoom/pan.",
+        title="🖱️ Hacé 2 clics (inicio y fin eje X). Usá toolbar para zoom/pan.",
         height=750,
-        clickmode="event+select",  # <— permite clics
-        dragmode="pan",            # <— no bloquea clic
+        clickmode="event+select",
+        dragmode="pan",
         margin=dict(l=0, r=0, t=50, b=0)
     )
 
@@ -165,7 +180,7 @@ for f in files:
     with cols[1]:
         jd_max = st.number_input(f"Valor JD máximo real ({f.name})", min_value=jd_min+1, max_value=400.0, value=365.0, step=1.0)
 
-    # ====== GRÁFICO CON LÍNEAS ======
+    # ====== GRÁFICO CON LÍNEAS DE REFERENCIA ======
     fig_lines = go.Figure()
     fig_lines.add_trace(go.Image(z=img_rgb))
     fig_lines.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="yellow", width=2)))
@@ -200,7 +215,7 @@ if rows:
     st.subheader("📊 Resultados (AUC ≥ 50 % antes JD121)")
     st.dataframe(df, use_container_width=True)
     st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                       file_name="patrones_auc50_click_funcional.csv")
+                       file_name="patrones_auc50_click_funcional_v2.csv")
 
     fig2, ax2 = plt.subplots(figsize=(9, 4))
     for y, (xx, yy, col) in series.items():
