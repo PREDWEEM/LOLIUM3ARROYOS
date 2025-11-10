@@ -1,227 +1,92 @@
-# -*- coding: utf-8 -*-
-# 🌾 PREDWEEM — Clasificador funcional con clics + JD reales (versión estable)
-# Compatible con Streamlit Cloud — Carga robusta de imágenes (PIL) + Clics funcionales
-
 import streamlit as st
+import pandas as pd
+import numpy as np
+import altair as alt
 
-# ====== CHEQUEO DEPENDENCIAS ======
-try:
-    from streamlit_plotly_events import plotly_events
-except ImportError:
-    st.warning("""
-    ⚠️ Falta instalar **streamlit-plotly-events**:
-    ```bash
-    pip install streamlit-plotly-events
-    ```
-    Si usás Streamlit Cloud, agregala a tu `requirements.txt`.
-    """)
+st.title("Análisis de Patrones de Emergencia Relativa por Día Juliano")
+
+# 1. Cargar múltiples archivos Excel (.xlsx)
+archivos_subidos = st.file_uploader(
+    "Cargar archivos Excel con series de emergencia relativa:", 
+    type=["xlsx"], accept_multiple_files=True
+)
+if not archivos_subidos:  # Si no se subió nada, mostrar aviso
+    st.info("🔺 Por favor, cargue uno o más archivos Excel para comenzar el análisis.")
     st.stop()
 
-import os, io, cv2
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-from PIL import Image
-from scipy.signal import savgol_filter
+# Listas para acumular datos combinados y resultados resumen
+datos_combinados = []
+resultados = []
 
-# ====== CONFIGURACIÓN ======
-st.set_page_config(page_title="PREDWEEM — Clasificación por clics (v2)", layout="wide")
-st.title("🌾 Clasificación de patrones — Clics + JD reales (versión estable)")
-
-st.markdown("""
-🧭 **Modo de uso:**
-1. Hacé **2 clics** sobre el gráfico (inicio y fin del eje X visible).  
-2. Ingresá los valores **reales de JD** correspondientes.  
-3. Verás **líneas rojas** que confirman la calibración.  
-4. La app clasifica automáticamente (AUC ≥ 50 % antes JD 121).  
-5. Descargá los resultados en CSV (`calibracion_patrones_clicks.csv`).
-""")
-
-CALIB_FILE = "calibracion_patrones_clicks.csv"
-JD_CUTOFF = 121
-EPS = 1e-9
-
-# ====== FUNCIONES ======
-def read_image(file):
-    """Lectura robusta compatible con Streamlit Cloud"""
+# 2. Procesar cada archivo subido
+for archivo in archivos_subidos:
+    # Leer datos de Día y Emergencia
     try:
-        if hasattr(file, "read"):
-            data = file.read()
-        else:
-            with open(file, "rb") as f:
-                data = f.read()
-        img_pil = Image.open(io.BytesIO(data)).convert("RGB")
-        img_np = np.array(img_pil)[:, :, ::-1]  # RGB→BGR
-        return img_np
+        df = pd.read_excel(archivo, header=None, names=["Dia", "Emergencia"])
     except Exception as e:
-        st.error(f"❌ Error al cargar la imagen {getattr(file,'name',file)}: {e}")
-        return None
+        st.error(f"❌ No se pudo leer el archivo {archivo.name}: {e}")
+        continue  # Saltar a siguiente archivo si hay error
 
-def extract_curve(img_bgr, thr_dark, c_lo, c_hi):
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    mask = (gray <= thr_dark).astype(np.uint8) * 255
-    edges = cv2.Canny(mask, c_lo, c_hi)
-    h, w = edges.shape
-    xs, ys = [], []
-    for x in range(w):
-        y_col = np.where(edges[:, x] > 0)[0]
-        if y_col.size:
-            ys.append(int(np.median(y_col[:3])))
-            xs.append(x)
-    return np.array(xs), np.array(ys), h, w
+    # Obtener nombre identificador (por ejemplo, año desde el nombre de archivo)
+    nombre = archivo.name
+    if nombre.lower().endswith(".xlsx"):
+        nombre = nombre[:-5]  # quitar ".xlsx"
+    serie_id = nombre  # podría ser año
 
-def map_to_jd(xs_px, ys_px, h, x_min_px, x_max_px, jd_min, jd_max):
-    y = (h - 1 - ys_px).astype(float)
-    if y.max() > 0: y /= y.max()
-    jd = jd_min + (xs_px - x_min_px) * (jd_max - jd_min) / max(1, (x_max_px - x_min_px))
-    mask = (jd >= jd_min) & (jd <= jd_max)
-    return jd[mask], y[mask]
+    # 3. Calcular AUC total y parcial hasta día 121
+    auc_total = np.trapz(df["Emergencia"], df["Dia"])
+    auc_121   = np.trapz(df[df["Dia"] <= 121]["Emergencia"], df[df["Dia"] <= 121]["Dia"])
+    proporcion = auc_121 / auc_total if auc_total != 0 else 0.0
 
-def regularize(x, y):
-    if x.size < 3: return np.array([]), np.array([])
-    xg = np.arange(1, JD_CUTOFF + 1, 1.0)
-    yg = np.interp(xg, x, y, left=0.0, right=0.0)
-    return xg, yg
-
-def smooth(y, win, poly):
-    if len(y) < win: return y
-    if win % 2 == 0: win += 1
-    return savgol_filter(y, win, poly, mode="interp")
-
-def auc(y): return float(np.trapz(y))
-
-def classify_auc50(x, y):
-    total = auc(y)
-    share = auc(y[x <= JD_CUTOFF]) / (total + EPS)
-    patt = "CONCENTRADO" if share >= 0.50 else "EXTENDIDO"
-    col = "green" if patt == "CONCENTRADO" else "orange"
-    prob = round(abs(share - 0.50) * 1.5 + 0.5, 2)
-    return patt, prob, dict(share=share, total=total, col=col)
-
-def load_calib():
-    if os.path.exists(CALIB_FILE):
-        try: return pd.read_csv(CALIB_FILE)
-        except: return pd.DataFrame(columns=["imagen","x_min_px","x_max_px","JD_min","JD_max"])
-    return pd.DataFrame(columns=["imagen","x_min_px","x_max_px","JD_min","JD_max"])
-
-def save_calib(df): df.to_csv(CALIB_FILE, index=False)
-
-# ====== SIDEBAR ======
-with st.sidebar:
-    st.header("🎛️ Parámetros de detección")
-    thr_dark = st.slider("Umbral de oscuridad", 0, 255, 70)
-    canny_low = st.slider("Canny low", 0, 200, 30)
-    canny_high = st.slider("Canny high", 50, 300, 120)
-    win = st.slider("Ventana Savitzky-Golay", 3, 51, 9, step=2)
-    poly = st.slider("Orden polinomio", 1, 5, 2)
-    normalize_area = st.checkbox("Normalizar área total (AUC=1)", True)
-    auto_save = st.checkbox("Guardar calibración automáticamente", True)
-
-# ====== ARCHIVOS ======
-files = st.file_uploader("📤 Subí imágenes (PNG/JPG)", type=["png","jpg","jpeg"], accept_multiple_files=True)
-if not files: st.stop()
-df_calib = load_calib()
-rows, series = [], {}
-
-# ====== LOOP PRINCIPAL ======
-for f in files:
-    st.markdown("---")
-    st.subheader(f"🖼️ {f.name}")
-
-    img_bgr = read_image(f)
-    if img_bgr is None:
-        continue
-
-    xs, ys, h, w = extract_curve(img_bgr, thr_dark, canny_low, canny_high)
-    if xs.size == 0:
-        st.error("⚠️ No se detectó la curva. Ajustá los filtros.")
-        continue
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-    # ====== GRÁFICO INTERACTIVO FUNCIONAL ======
-    fig = go.Figure()
-    fig.add_trace(go.Image(z=img_rgb))
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
-                             line=dict(color="yellow", width=2), name="Curva detectada"))
-    fig.update_xaxes(showticklabels=False, range=[0, w])
-    fig.update_yaxes(showticklabels=False, range=[h, 0])
-    fig.update_layout(
-        title="🖱️ Hacé 2 clics (inicio y fin eje X). Usá toolbar para zoom/pan.",
-        height=750,
-        clickmode="event+select",
-        dragmode="pan",
-        margin=dict(l=0, r=0, t=50, b=0)
-    )
-
-    clicks = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=750)
-    st.plotly_chart(fig, use_container_width=True)
-
-    key = f"clicks_{f.name}"
-    if key not in st.session_state: st.session_state[key] = []
-    if clicks:
-        for c in clicks:
-            if "x" in c:
-                st.session_state[key].append(float(c["x"]))
-        st.session_state[key] = st.session_state[key][:2]
-
-    sel = st.session_state[key]
-    if len(sel) == 2:
-        x_min_px, x_max_px = sorted(sel)
-        st.success(f"📍 Píxeles seleccionados: {int(x_min_px)} → {int(x_max_px)}")
+    # 4. Clasificar según proporción (50% umbral)
+    if proporcion >= 0.5:
+        clasif = "CONCENTRADO"
     else:
-        st.info("👉 Hacé 2 clics sobre el gráfico (mín y máx del eje X).")
-        continue
+        clasif = "EXTENDIDO"
 
-    # ====== VALORES JD ======
-    cols = st.columns(2)
-    with cols[0]:
-        jd_min = st.number_input(f"Valor JD mínimo real ({f.name})", min_value=0.0, max_value=400.0, value=0.0, step=1.0)
-    with cols[1]:
-        jd_max = st.number_input(f"Valor JD máximo real ({f.name})", min_value=jd_min+1, max_value=400.0, value=365.0, step=1.0)
-
-    # ====== GRÁFICO CON LÍNEAS DE REFERENCIA ======
-    fig_lines = go.Figure()
-    fig_lines.add_trace(go.Image(z=img_rgb))
-    fig_lines.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="yellow", width=2)))
-    fig_lines.add_vline(x=x_min_px, line=dict(color="red", dash="dash"), annotation_text=f"JD {jd_min}")
-    fig_lines.add_vline(x=x_max_px, line=dict(color="red", dash="dash"), annotation_text=f"JD {jd_max}")
-    fig_lines.update_layout(height=400, margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(fig_lines, use_container_width=True)
-
-    if auto_save:
-        df_calib = df_calib[df_calib["imagen"] != f.name]
-        df_calib.loc[len(df_calib)] = [f.name, x_min_px, x_max_px, jd_min, jd_max]
-        save_calib(df_calib)
-
-    # ====== CLASIFICACIÓN ======
-    x_jd, y_raw = map_to_jd(xs, ys, h, x_min_px, x_max_px, jd_min, jd_max)
-    xg, yg = regularize(x_jd, y_raw)
-    yg = smooth(yg, win, poly)
-    if normalize_area and auc(yg) > 0: yg /= auc(yg)
-    patt, prob, info = classify_auc50(xg, yg)
-    year = os.path.splitext(f.name)[0]
-    rows.append({
-        "año": year, "JD_min": round(jd_min, 1), "JD_max": round(jd_max, 1),
-        "%_área ≤121": round(info["share"] * 100, 1),
-        "patrón": patt, "probabilidad": prob
+    # Guardar resultados en lista
+    resultados.append({
+        "Serie (Archivo)": serie_id,
+        "AUC_total": auc_total,
+        "AUC_<=121": auc_121,
+        "Proporción_<=121": proporcion,
+        "Clasificación": clasif
     })
-    series[year] = (xg, yg, info["col"])
-    st.success(f"**{year}** → {patt} ({prob:.2f}) — {info['share']*100:.1f}% del área antes JD121")
 
-# ====== RESULTADOS ======
-if rows:
-    df = pd.DataFrame(rows)
-    st.subheader("📊 Resultados (AUC ≥ 50 % antes JD121)")
-    st.dataframe(df, use_container_width=True)
-    st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                       file_name="patrones_auc50_click_funcional_v2.csv")
+    # Preparar datos para gráfico, añadiendo columnas de identificador y clasificación
+    df["Serie"] = serie_id
+    df["Clasificacion"] = clasif
+    datos_combinados.append(df)
 
-    fig2, ax2 = plt.subplots(figsize=(9, 4))
-    for y, (xx, yy, col) in series.items():
-        ax2.plot(xx, yy, label=y, color=col)
-    ax2.axvline(121, color="black", ls="--", lw=1)
-    ax2.set_xlabel("Día juliano (JD calibrado)")
-    ax2.set_ylabel("Emergencia relativa")
-    ax2.legend(ncol=6, fontsize=8)
-    st.pyplot(fig2, clear_figure=True)
+# Si no se obtuvo ningún resultado (por ejemplo, todos los archivos fallaron al leer)
+if not resultados:
+    st.error("No se obtuvieron datos de los archivos proporcionados.")
+    st.stop()
+
+# 5. Concatenar datos de todas las series para graficar
+datos_comb_df = pd.concat(datos_combinados, ignore_index=True)
+
+# 6. Crear gráfico de líneas múltiples con Altair
+chart = alt.Chart(datos_comb_df).mark_line().encode(
+    x=alt.X('Dia:Q', title='Día Juliano'),
+    y=alt.Y('Emergencia:Q', title='Emergencia relativa'),
+    color=alt.Color('Serie:N', title='Serie'),
+    strokeDash=alt.StrokeDash('Clasificacion:N', title='Patrón')
+).properties(width=700, height=400)
+st.altair_chart(chart, use_container_width=True)
+
+# 7. Mostrar tabla de resultados
+st.write("## Resultados por serie")
+resultados_df = pd.DataFrame(resultados)
+# Redondear proporción a 2 decimales para legibilidad
+resultados_df["Proporción_<=121"] = resultados_df["Proporción_<=121"].round(2)
+st.table(resultados_df)
+
+# 8. Botón de descarga de CSV
+csv_data = resultados_df.to_csv(index=False).encode("utf-8")
+st.download_button(
+    label="📥 Descargar resumen CSV",
+    data=csv_data,
+    file_name="resumen_emergencia.csv",
+    mime="text/csv"
+)
