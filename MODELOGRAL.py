@@ -54,7 +54,7 @@ dia_seleccionado = st.slider(
     min_value=1, max_value=365, value=180, key="dia_slider"
 )
 
-# === ESTADÍSTICAS PARA EL DÍA SELECCIONADO ===
+# === ESTADÍSTICAS ===
 idx = dia_seleccionado - 1
 valores_dia = curvas_historicas[:, idx]
 media = valores_dia.mean()
@@ -70,17 +70,15 @@ dias = np.arange(1, 366)
 data_graf = []
 for curva, anno in zip(curvas_historicas, etiquetas_annos):
     for d, valor in zip(dias, curva):
-        data_graf.append({"Día": d, "Año": anno, "Fracción": valor})
+        data_graf.append({"Día": d, "Año": anno, "Fracción acumulada": valor})
 
-# Agregar curva promedio
 curva_promedio = curvas_historicas.mean(axis=0)
 for d, valor in zip(dias, curva_promedio):
-    data_graf.append({"Día": d, "Año": "Promedio", "Fracción": valor})
+    data_graf.append({"Día": d, "Año": "Promedio", "Fracción acumulada": valor})
 
 df_graf = pd.DataFrame(data_graf)
 
 # === CÁLCULO DE EMERGENCIA RELATIVA SEMANAL ===
-# Derivada diaria suavizada con ventana móvil de 7 días
 emergencia_diaria = np.diff(curva_promedio, prepend=0)
 emergencia_relativa = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
 
@@ -89,14 +87,16 @@ df_relativa = pd.DataFrame({
     "Emergencia relativa semanal": emergencia_relativa
 })
 
-# === GRÁFICO ===
+# === GRÁFICOS BASE ===
 
-# Curvas anuales (finas)
-lineas = alt.Chart(df_graf).transform_filter(
-    alt.datum.Año != "Promedio"
+# Curvas históricas
+curvas = alt.Chart(df_graf).transform_filter(
+    alt.datum["Año"] != "Promedio"
 ).mark_line(opacity=0.5).encode(
-    x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Fracción:Q", title="Fracción acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
+    x="Día:Q",
+    y=alt.Y("Fracción acumulada:Q",
+            title="Fracción acumulada (0–1)",
+            axis=alt.Axis(titleColor="steelblue")),
     color=alt.Color("Año:N", title="Año")
 )
 
@@ -105,51 +105,57 @@ promedio = alt.Chart(df_graf[df_graf["Año"] == "Promedio"]).mark_line(
     color="black", strokeWidth=3
 ).encode(
     x="Día:Q",
-    y="Fracción:Q"
+    y="Fracción acumulada:Q"
 )
 
-# Emergencia relativa semanal (área + línea discontinua)
-area_relativa = alt.Chart(df_relativa).mark_area(
+# Línea vertical
+linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
+    color="red", strokeDash=[4, 4]
+).encode(x="Día:Q")
+
+# === Emergencia relativa semanal (eje secundario) ===
+# Para evitar sobreescritura, asignamos un canal y independiente explícito
+base_relativa = alt.Chart(df_relativa)
+
+area_relativa = base_relativa.mark_area(
     color="orange", opacity=0.3
 ).encode(
     x="Día:Q",
     y=alt.Y("Emergencia relativa semanal:Q",
-            title="Emergencia relativa semanal",
-            axis=alt.Axis(titleColor="orange"))
+            axis=alt.Axis(title="Emergencia relativa semanal (0–1)",
+                         titleColor="orange")),
 )
 
-linea_relativa = alt.Chart(df_relativa).mark_line(
+linea_relativa = base_relativa.mark_line(
     color="orange", strokeDash=[6, 3], strokeWidth=2
 ).encode(
     x="Día:Q",
     y="Emergencia relativa semanal:Q"
 )
 
-# Línea vertical (día seleccionado)
-linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
-    color="red", strokeDash=[4, 4]
-).encode(x="Día:Q")
-
 # === COMBINAR TODAS LAS CAPAS ===
+# Se usa resolve_scale(y='independent') para mantener ambos ejes separados.
 grafico = alt.layer(
-    lineas,
+    curvas,
     promedio,
+    linea_vertical,
     area_relativa,
-    linea_relativa,
-    linea_vertical
-).resolve_scale(y="independent").properties(
+    linea_relativa
+).resolve_scale(
+    y='independent'
+).properties(
     height=420,
-    title="Curvas de emergencia acumulada y emergencia relativa semanal (promedio histórico)"
+    title="Curvas de emergencia acumulada (años históricos) y emergencia relativa semanal (promedio histórico)"
 )
 
-# === MOSTRAR GRÁFICO ===
+# === MOSTRAR ===
 st.altair_chart(grafico, use_container_width=True)
 
 # === LEYENDA ===
 st.caption("""
 🟢 **Curvas históricas:** cada año individual.  
 ⚫ **Curva negra gruesa:** promedio histórico acumulado.  
-🟧 **Área naranja:** emergencia relativa semanal (promedio, suavizada 7 días).  
+🟧 **Área naranja:** emergencia relativa semanal (promedio 7 días).  
 🟧 **Línea discontinua:** tendencia de emergencia relativa semanal.  
 🔴 **Línea roja punteada:** día juliano seleccionado.
 """)
