@@ -213,7 +213,7 @@ with tabs[1]:
         )
 
 # ===============================================================
-# 🔮 TAB 3 — PREDICCIÓN NUEVO AÑO (con comparación histórica)
+# 🔮 TAB 3 — PREDICCIÓN NUEVO AÑO (con comparación histórica + eje secundario)
 # ===============================================================
 with tabs[2]:
     st.subheader("🔮 Predicción extendida (hasta JD 300)")
@@ -229,9 +229,11 @@ with tabs[2]:
             st.error("Faltan archivos.")
         else:
             try:
+                # --- Cargar modelo entrenado ---
                 bundle = joblib.load(modelo_up)
                 xsc, ysc, mlp = bundle["xsc"], bundle["ysc"], bundle["mlp"]
 
+                # --- Procesar meteorología ---
                 df = pd.read_excel(meteo_pred)
                 df = standardize_cols(df)
                 df = slice_jan_to_oct(df)
@@ -242,15 +244,20 @@ with tabs[2]:
                         df["jd"] = np.arange(1, len(df)+1)
                 df = df.set_index("jd").reindex(range(1,301)).interpolate().fillna(0).reset_index()
 
+                # --- Predicción de curva acumulada ---
                 xnew = np.concatenate([df["tmin"], df["tmax"], df["prec"]]).reshape(1,-1)
                 yhat = ysc.inverse_transform(mlp.predict(xsc.transform(xnew)))[0]
                 yhat = np.maximum.accumulate(yhat)
                 yhat = yhat / (yhat[-1] if yhat[-1] != 0 else 1.0)
                 yhat = np.clip(yhat, 0, 1)
-
                 dias = np.arange(1,301)
                 df_pred = pd.DataFrame({"Día": dias, "Emergencia predicha": yhat})
 
+                # --- Emergencia relativa semanal (media móvil 7 días) ---
+                rel = np.convolve(np.diff(np.insert(yhat,0,0)), np.ones(7)/7, mode="same")
+                df_rel = pd.DataFrame({"Día": dias, "Emergencia relativa semanal": rel})
+
+                # --- Capa base: acumulada + histórico ---
                 layers = []
                 if show_hist_ref and isinstance(curvas_hist, dict) and len(curvas_hist) > 0:
                     H = np.vstack([v[:300] for _, v in sorted(curvas_hist.items()) if len(v) >= 300])
@@ -269,37 +276,54 @@ with tabs[2]:
                     )
                     layers += [area_hist, line_mean]
 
+                # --- Línea de emergencia acumulada predicha ---
                 line_pred = alt.Chart(df_pred).mark_line(color="orange", strokeWidth=2.5).encode(
                     x=alt.X("Día:Q", title="Día juliano (1–300)"),
                     y=alt.Y("Emergencia predicha:Q", title="Emergencia acumulada (0–1)",
                             scale=alt.Scale(domain=[0,1]))
                 )
 
-                layers += [line_pred]
-                chart = alt.layer(*layers).properties(height=460, title="Curva predicha vs. histórico")
+                # --- Emergencia relativa semanal (eje secundario) ---
+                area_rel = alt.Chart(df_rel).mark_area(color="steelblue", opacity=0.25).encode(
+                    x="Día:Q",
+                    y=alt.Y("Emergencia relativa semanal:Q",
+                            axis=alt.Axis(title="Emergencia relativa semanal",
+                                          titleColor="steelblue"))
+                )
+                line_rel = alt.Chart(df_rel).mark_line(color="steelblue", strokeDash=[5,3]).encode(
+                    x="Día:Q",
+                    y="Emergencia relativa semanal:Q"
+                )
+
+                layers += [line_pred, area_rel, line_rel]
+
+                # --- Combinación con ejes independientes ---
+                chart = alt.layer(*layers).resolve_scale(
+                    y='independent'
+                ).properties(
+                    height=480,
+                    title="Curva predicha vs. histórico + Emergencia relativa semanal"
+                )
+
                 st.altair_chart(chart, use_container_width=True)
 
+                # --- Descarga CSV comparativo ---
+                out = pd.DataFrame({"Día": dias,
+                                    "Emergencia_predicha": yhat,
+                                    "Emergencia_relativa": rel})
+                st.download_button(
+                    "⬇️ Descargar curva y emergencia relativa (CSV)",
+                    out.to_csv(index=False).encode("utf-8"),
+                    file_name="curva_predicha_relativa_300.csv",
+                    mime="text/csv"
+                )
+
+                # --- Métricas comparativas ---
                 if show_hist_ref and len(curvas_hist) > 0:
-                    out = pd.DataFrame({"Día": dias, "Predicha": yhat})
-                    out["Promedio_hist"] = df_mean["Promedio histórico"].values
-                    out["Hist_min"] = df_band["Min"].values
-                    out["Hist_max"] = df_band["Max"].values
-                    st.download_button(
-                        "⬇️ Descargar comparación (CSV)",
-                        out.to_csv(index=False).encode("utf-8"),
-                        file_name="comparacion_pred_vs_historico_300.csv",
-                        mime="text/csv"
-                    )
-                    rmse = np.sqrt(mean_squared_error(df_mean["Promedio histórico"].values, yhat))
-                    mae  = mean_absolute_error(df_mean["Promedio histórico"].values, yhat)
-                    st.caption(f"📏 Comparación contra promedio histórico — RMSE: **{rmse:.3f}**, MAE: **{mae:.3f}**")
-                else:
-                    st.download_button(
-                        "⬇️ Descargar curva predicha (CSV)",
-                        df_pred.to_csv(index=False).encode("utf-8"),
-                        file_name="curva_predicha_300.csv",
-                        mime="text/csv"
-                    )
+                    rmse = np.sqrt(mean_squared_error(y_mean, yhat))
+                    mae  = mean_absolute_error(y_mean, yhat)
+                    st.caption(f"📏 Comparación con promedio histórico — RMSE: **{rmse:.3f}**, MAE: **{mae:.3f}**")
 
             except Exception as e:
                 st.error(f"Error en la predicción: {e}")
+
