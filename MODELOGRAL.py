@@ -4,17 +4,19 @@ import numpy as np
 import altair as alt
 import re
 
-# Configuración inicial
+# =============================================
+# 🌾 Análisis histórico de emergencia acumulada
+# =============================================
+
 st.set_page_config(page_title="Emergencia Acumulada Histórica", layout="centered")
 st.title("Análisis histórico de emergencia acumulada")
 
-# === Carga y preparación de datos ===
+# === FUNCIÓN DE CARGA DE DATOS ===
 @st.cache_data
 def cargar_datos_normalizados():
     archivos = ["2008.xlsx", "2009+.xlsx", "2011.xlsx", "2012.xlsx",
                 "2013.xlsx", "2014.xlsx", "2023.xlsx", "2024.xlsx", "2025.xlsx"]
-    curvas = []
-    etiquetas = []
+    curvas, etiquetas = [], []
     for archivo in archivos:
         try:
             datos = pd.read_excel(archivo, header=None)
@@ -40,34 +42,30 @@ def cargar_datos_normalizados():
     curvas = np.array(curvas)
     return curvas, etiquetas
 
-# === Cargar datos ===
+# === CARGA DE DATOS ===
 curvas_historicas, etiquetas_annos = cargar_datos_normalizados()
-
 if curvas_historicas.size == 0:
     st.error("No se encontraron datos históricos para procesar.")
     st.stop()
 
-# === Selección del día ===
+# === SLIDER DE DÍA JULIANO ===
 dia_seleccionado = st.slider(
     "Seleccione el día juliano",
     min_value=1, max_value=365, value=180, key="dia_slider"
 )
 
+# === ESTADÍSTICAS PARA EL DÍA SELECCIONADO ===
 idx = dia_seleccionado - 1
 valores_dia = curvas_historicas[:, idx]
 media = valores_dia.mean()
 desviacion = valores_dia.std()
 prob_supera_50 = (valores_dia > 0.5).mean()
 
-media_pct = media * 100
-desviacion_pct = desviacion * 100
-prob_pct = prob_supera_50 * 100
-
 st.markdown(f"**Resultados para el día {dia_seleccionado}:**")
-st.write(f"- Emergencia acumulada promedio: **{media_pct:.1f}%** del total anual (± {desviacion_pct:.1f}%).")
-st.write(f"- Probabilidad de superar 50% del total anual para este día: **{prob_pct:.1f}%**.")
+st.write(f"- Emergencia acumulada promedio: **{media*100:.1f}%** (± {desviacion*100:.1f}%).")
+st.write(f"- Probabilidad de superar 50% del total anual: **{prob_supera_50*100:.1f}%**.")
 
-# === Datos para gráfico ===
+# === PREPARAR DATOS PARA GRÁFICO ===
 dias = np.arange(1, 366)
 data_graf = []
 for curva, anno in zip(curvas_historicas, etiquetas_annos):
@@ -80,42 +78,60 @@ for d, valor in zip(dias, curva_promedio):
 
 df_graf = pd.DataFrame(data_graf)
 
-# === Calcular curva de emergencia relativa semanal ===
-# Diferencia semanal (promedio 7 días)
+# === CÁLCULO DE EMERGENCIA RELATIVA SEMANAL ===
+# Diferencia diaria suavizada con ventana de 7 días
 emergencia_diaria = np.diff(curva_promedio, prepend=0)
-emergencia_semanal = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
+emergencia_relativa = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
 
 df_relativa = pd.DataFrame({
     "Día": dias,
-    "Emergencia semanal": emergencia_semanal
+    "Emergencia relativa semanal": emergencia_relativa
 })
 
-# === Gráfico de curvas ===
+# === GRÁFICO PRINCIPAL ===
+
+# Curvas anuales + promedio (fracción acumulada)
 lineas = alt.Chart(df_graf).mark_line().encode(
     x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Fracción:Q", title="Fracción acumulada del año", scale=alt.Scale(domain=[0, 1])),
+    y=alt.Y("Fracción:Q", title="Fracción acumulada", scale=alt.Scale(domain=[0, 1])),
     color=alt.Color("Año:N", title="Año"),
     size=alt.condition(alt.datum.Año == "Promedio", alt.value(3), alt.value(1))
 )
 
+# Línea vertical para el día seleccionado
 linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
     color="red", strokeDash=[4, 4]
 ).encode(x="Día:Q")
 
-# Nueva curva: Emergencia relativa semanal (naranja discontinua)
-linea_relativa = alt.Chart(df_relativa).mark_line(
-    color="orange", strokeDash=[6, 3]
+# Área sombreada (emergencia relativa semanal)
+area_relativa = alt.Chart(df_relativa).mark_area(
+    color="orange", opacity=0.3
 ).encode(
     x="Día:Q",
-    y=alt.Y("Emergencia semanal:Q", title="Emergencia relativa semanal", axis=alt.Axis(titleColor="orange")),
-).interactive()
+    y=alt.Y("Emergencia relativa semanal:Q",
+            title="Emergencia relativa semanal",
+            axis=alt.Axis(titleColor="orange"))
+)
 
-# Combinar capas y establecer doble eje Y
-grafico = alt.layer(lineas, linea_vertical, linea_relativa).resolve_scale(
+# Línea discontinua sobre el área (refuerzo visual)
+linea_relativa = alt.Chart(df_relativa).mark_line(
+    color="orange", strokeDash=[6, 3], opacity=0.9
+).encode(
+    x="Día:Q",
+    y="Emergencia relativa semanal:Q"
+)
+
+# === COMBINAR TODAS LAS CAPAS ===
+grafico = alt.layer(lineas, linea_vertical, area_relativa, linea_relativa).resolve_scale(
     y="independent"
 )
 
 st.altair_chart(grafico, use_container_width=True)
 
-st.caption("La línea naranja discontinua muestra la emergencia relativa semanal derivada de la curva promedio acumulada.")
+st.caption("""
+🟢 **Curvas de emergencia acumulada:** líneas de colores (una por año).  
+⚫ **Curva negra gruesa:** promedio histórico acumulado.  
+🟧 **Área naranja:** emergencia relativa semanal (incremento promedio semanal de emergencia).  
+🔴 **Línea roja punteada:** día juliano seleccionado.
+""")
 
