@@ -4,12 +4,12 @@ import numpy as np
 import altair as alt
 import re
 
-# =======================================================
-# 🌾 PREDWEEM — Emergencia acumulada + emergencia semanal
-# =======================================================
+# =============================================
+# 🌾 Análisis histórico de emergencia acumulada
+# =============================================
 
 st.set_page_config(page_title="Emergencia Acumulada Histórica", layout="centered")
-st.title("Análisis histórico de emergencia acumulada y emergencia relativa semanal")
+st.title("Análisis histórico de emergencia acumulada")
 
 # === FUNCIÓN DE CARGA DE DATOS ===
 @st.cache_data
@@ -65,7 +65,7 @@ st.markdown(f"**Resultados para el día {dia_seleccionado}:**")
 st.write(f"- Emergencia acumulada promedio: **{media*100:.1f}%** (± {desviacion*100:.1f}%).")
 st.write(f"- Probabilidad de superar 50% del total anual: **{prob_supera_50*100:.1f}%**.")
 
-# === DATOS PARA GRÁFICO ===
+# === PREPARAR DATOS PARA GRÁFICO ===
 dias = np.arange(1, 366)
 data_graf = []
 for curva, anno in zip(curvas_historicas, etiquetas_annos):
@@ -78,77 +78,68 @@ for d, valor in zip(dias, curva_promedio):
 
 df_graf = pd.DataFrame(data_graf)
 
-# === EMERGENCIA RELATIVA SEMANAL (% normalizada) ===
+# === CÁLCULO DE EMERGENCIA RELATIVA SEMANAL ===
+# Diferencia diaria suavizada con ventana de 7 días
 emergencia_diaria = np.diff(curva_promedio, prepend=0)
 emergencia_relativa = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
-# Normalizar a porcentaje del máximo semanal
-emergencia_relativa_pct = (emergencia_relativa / np.max(emergencia_relativa)) * 100
 
 df_relativa = pd.DataFrame({
     "Día": dias,
-    "Emergencia relativa semanal (%)": emergencia_relativa_pct
+    "Emergencia relativa semanal": emergencia_relativa
 })
 
-# === GRÁFICO ===
+# === GRÁFICO PRINCIPAL ===
 
-# Líneas anuales
-lineas = alt.Chart(df_graf).mark_line(opacity=0.5).encode(
+# Curvas anuales + promedio (fracción acumulada)
+lineas = alt.Chart(df_graf).mark_line().encode(
     x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Fracción:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
-    color=alt.Color("Año:N", title="Año")
+    y=alt.Y("Fracción:Q", title="Fracción acumulada", scale=alt.Scale(domain=[0, 1])),
+    color=alt.Color("Año:N", title="Año"),
+    size=alt.condition(alt.datum.Año == "Promedio", alt.value(3), alt.value(1))
 )
 
-# Curva promedio destacada (negra gruesa + halo)
-promedio_halo = alt.Chart(df_graf[df_graf["Año"] == "Promedio"]).mark_line(
-    color="black", opacity=0.2, strokeWidth=8
-).encode(x="Día:Q", y="Fracción:Q")
-promedio_linea = alt.Chart(df_graf[df_graf["Año"] == "Promedio"]).mark_line(
-    color="black", strokeWidth=3
-).encode(x="Día:Q", y="Fracción:Q")
-
-# Línea vertical
+# Línea vertical para el día seleccionado
 linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
     color="red", strokeDash=[4, 4]
 ).encode(x="Día:Q")
 
-# Área y línea de emergencia relativa semanal (%)
+# Área sombreada (emergencia relativa semanal)
 area_relativa = alt.Chart(df_relativa).mark_area(
     color="orange", opacity=0.3
 ).encode(
     x="Día:Q",
-    y=alt.Y("Emergencia relativa semanal (%):Q",
-            title="Emergencia relativa semanal (%)",
+    y=alt.Y("Emergencia relativa semanal:Q",
+            title="Emergencia relativa semanal",
             axis=alt.Axis(titleColor="orange"))
 )
 
+# Línea discontinua sobre el área (refuerzo visual)
 linea_relativa = alt.Chart(df_relativa).mark_line(
-    color="orange", strokeDash=[6, 3], strokeWidth=2
+    color="orange", strokeDash=[6, 3], opacity=0.9
 ).encode(
     x="Día:Q",
-    y="Emergencia relativa semanal (%):Q"
+    y="Emergencia relativa semanal:Q"
 )
 
-# === COMBINAR CAPAS ===
+# === COMBINAR TODAS LAS CAPAS ===
 grafico = alt.layer(
-    area_relativa,
-    linea_relativa,
     lineas,
-    promedio_halo,
-    promedio_linea,
-    linea_vertical
+    linea_vertical,
+    area_relativa,
+    linea_relativa
 ).resolve_scale(y="independent").properties(
     height=420,
-    title="Curvas de emergencia acumulada (históricas) y emergencia relativa semanal (%)"
+    title="Curvas de emergencia acumulada (años históricos) y emergencia relativa semanal (promedio)"
 )
 
 # === MOSTRAR GRÁFICO ===
 st.altair_chart(grafico, use_container_width=True)
 
-# === LEYENDA ===
+# === LEYENDA / EXPLICACIÓN ===
 st.caption("""
-🟢 **Curvas anuales:** evolución de la emergencia acumulada (una por año).  
-⚫ **Curva negra gruesa:** promedio histórico acumulado (resaltada con halo).  
-🟧 **Área naranja:** emergencia relativa semanal (% normalizado respecto al máximo).  
-🟧 **Línea naranja discontinua:** tendencia de emergencia relativa semanal.  
+🟢 **Curvas de emergencia acumulada:** líneas de colores (una por año).  
+⚫ **Curva negra gruesa:** promedio histórico acumulado.  
+🟧 **Área naranja:** emergencia relativa semanal (incremento promedio semanal de emergencia).  
 🔴 **Línea roja punteada:** día juliano seleccionado.
 """)
+
