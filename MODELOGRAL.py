@@ -1,145 +1,153 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import altair as alt
 
-st.title("Visualización histórica de emergencia agrícola")
+st.title("Curvas de Emergencia Anuales")
 
-# **Carga de datos**: Especificar los años a incluir y sus archivos
-anos = [2008, 2009, 2011, 2012, 2013, 2014, 2023, 2024, 2025]
-# Diccionarios para almacenar curvas acumuladas y no acumuladas
-curvas_acumuladas = {}
-curvas_no_acumuladas = {}
+# 1. Cargador de archivos Excel múltiple
+uploaded_files = st.file_uploader(
+    "Sube archivos Excel (.xlsx)", type="xlsx",
+    accept_multiple_files=True, key="file_uploader"
+)
 
-for ano in anos:
-    # Leer el archivo Excel correspondiente al año (sin encabezado explícito)
-    df = pd.read_excel(f"{ano}.xlsx", header=None, names=["dia", "valor"])
-    # Asegurar que los días sean 1-365 (por si faltan días, completaremos luego)
-    df = df.astype({"dia": int, "valor": float})
-    # Si el último día presente es < 365, extender el DataFrame con valores constantes hasta 365
-    if df["dia"].iloc[-1] < 365:
-        ultimo_dia = int(df["dia"].iloc[-1])
-        ultimo_valor = float(df["valor"].iloc[-1])
-        # Crear filas desde ultimo_dia+1 hasta 365 con el ultimo_valor
-        dias_faltantes = pd.DataFrame({
-            "dia": list(range(ultimo_dia + 1, 366)),
-            "valor": [ultimo_valor] * (365 - ultimo_dia)
-        })
-        df = pd.concat([df, dias_faltantes], ignore_index=True)
-    # Ahora df tiene días 1..365 (si originalmente terminaba antes, completado con último valor)
-
-    # Decidir si la serie es diaria (fracciones) o semanal (valores absolutos)
-    total_anual = df["valor"].sum()
-    es_diario = (abs(total_anual - 1.0) < 0.2) or (ano in [2023, 2024, 2025])
-    # (Usamos una tolerancia ~0.2 por si sumas ~0.94 en datos incompletos, etc.)
-
-    if es_diario:
-        # Datos diarios (fracción del total por día): aplicar cumsum directamente para curva acumulada
-        curva_acum = df["valor"].cumsum()
-    else:
-        # Datos semanales/absolutos: verificar si ya es acumulada o no
-        serie = df["valor"]
-        if not serie.is_monotonic_increasing:
-            # No es monótona creciente -> son incrementos semanales -> acumulamos
-            curva_acum = serie.cumsum()
+if uploaded_files:
+    curvas_acumuladas = {}  # dict año -> array acumulada
+    curvas_no_acumuladas = {}  # dict año -> array no acumulada
+    
+    for file in uploaded_files:
+        # Obtener año del nombre de archivo (asumimos que contiene 'YYYY')
+        name = file.name
+        year_match = pd.to_datetime(name, errors='ignore', format='%Y')
+        if year_match == 'NaT':
+            # Extraer dígitos de año
+            import re
+            m = re.search(r"(\d{4})", name)
+            year = m.group(1) if m else name
         else:
-            # Ya es creciente -> asumimos que ya es acumulada
-            curva_acum = serie.copy()
-    # Normalizar la curva acumulada al total anual (último valor)
-    total_final = curva_acum.iloc[-1]
-    if total_final == 0:
-        # Evitar dividir por cero si hubiera año sin datos (no debería ocurrir aquí)
-        curva_acum_norm = curva_acum
-    else:
-        curva_acum_norm = curva_acum / float(total_final)
-    # Guardar curva acumulada normalizada (como lista para Altair)
-    curvas_acumuladas[ano] = curva_acum_norm.values
-
-    # Calcular curva no acumulada relativa: diferencias diarias de la acumulada normalizada
-    valores_relativos = [curva_acum_norm.iloc[0]]
-    # Diferenica sucesiva: valor[i] = curva_acum[i] - curva_acum[i-1]
-    valores_relativos += list(curva_acum_norm.iloc[1:].values - curva_acum_norm.iloc[:-1].values)
-    curvas_no_acumuladas[ano] = valores_relativos
-
-# Convertir datos a formato largo para Altair
-data_list = []
-for ano in anos:
-    # Curva acumulada
-    for dia in range(1, 366):
-        data_list.append({
-            "Año": str(ano),
-            "Día": dia,
-            "Valor": curvas_acumuladas[ano][dia-1],
-            "Tipo": "Acumulada"
-        })
-    # Curva no acumulada (semanal/diaria)
-    for dia in range(1, 366):
-        data_list.append({
-            "Año": str(ano),
-            "Día": dia,
-            "Valor": curvas_no_acumuladas[ano][dia-1],
-            "Tipo": "Semanal"
-        })
-
-df_long = pd.DataFrame(data_list)
-
-# Crear slider para seleccionar día juliano
-dia_sel = st.slider("Seleccionar día juliano", min_value=1, max_value=365, value=180)
-
-# **Cálculo de estadísticas para el día seleccionado**:
-# Filtrar valores acumulados de todos los años en el día seleccionado
-vals_dia = []
-for ano in anos:
-    # tomar valor acumulado normalizado de ese año al día seleccionado
-    val = curvas_acumuladas[ano][dia_sel-1]
-    vals_dia.append(val)
-promedio = pd.np.mean(vals_dia)  # (pd.np is a shorthand to NumPy)
-desvest = pd.np.std(vals_dia, ddof=0)  # desviación estándar poblacional
-# Probabilidad de superar 50% (0.5) a ese día
-count_superan = sum(1 for v in vals_dia if v >= 0.5)
-probabilidad = count_superan / len(vals_dia) if len(vals_dia) > 0 else 0.0
-
-# Mostrar estadísticas en la app
-st.write(f"**Emergencia acumulada media (fracción del total anual) al día {dia_sel}:** {promedio:.3f}")
-st.write(f"**Desviación estándar:** {desvest:.3f}")
-st.write(f"**Probabilidad de haber superado 50% del total anual para este día:** {(probabilidad*100):.1f}%")
-
-# **Construcción del gráfico Altair**
-# Gráfico base con todas las curvas (acumuladas y semanales)
-chart = alt.Chart(df_long).mark_line().encode(
-    x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Valor:Q", title="Fracción del total anual"),
-    color=alt.Color("Año:N", title="Año"),
-    strokeDash=alt.StrokeDash("Tipo:N", title="Tipo de curva")
-)
-
-# Destacar la curva promedio acumulada (cálculo previo por día)
-# Construir DataFrame para la línea promedio acumulada
-prom_cum = []
-curva_prom = [0] * 365
-# calcular promedio acumulado por día (suma de curvas acumuladas de todos los años / n años)
-for dia in range(1, 366):
-    valores_dia = [curvas_acumuladas[ano][dia-1] for ano in anos]
-    curva_prom[dia-1] = sum(valores_dia) / len(valores_dia)
-    prom_cum.append({"Día": dia, "Valor": curva_prom[dia-1]})
-df_prom = pd.DataFrame(prom_cum)
-linea_promedio = alt.Chart(df_prom).mark_line(color="black", size=3).encode(
-    x="Día:Q",
-    y="Valor:Q"
-)
-
-# Línea vertical en el día seleccionado
-linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_sel]})).mark_rule(
-    color="firebrick", strokeWidth=2, strokeDash=[4,2]
-).encode(x="Día:Q")
-
-# Combinar las capas: curvas de años + promedio + regla vertical
-combined_chart = chart + linea_promedio + linea_vertical
-# Ajustar dimensiones y leyendas
-combined_chart = combined_chart.properties(width=700, height=400)
-combined_chart = combined_chart.configure_legend(
-    titleFontSize=11,
-    labelFontSize=10
-)
-
-st.altair_chart(combined_chart, use_container_width=True)
+            year = str(year_match.year)
+        
+        # Leer datos sin encabezado, columnas: [día, valor]
+        df = pd.read_excel(file, header=None)
+        df = df.dropna(how='all')  # eliminar filas vacías si las hubiera
+        df.columns = ['dia', 'valor']
+        # Aseguramos tipo numérico
+        df['dia'] = df['dia'].astype(int)
+        df['valor'] = df['valor'].astype(float)
+        
+        # Ordenar por día (por si acaso)
+        df = df.sort_values('dia')
+        
+        # Valores y días originales
+        dias = df['dia'].values
+        vals = df['valor'].values
+        
+        # Extender la serie hasta el día 365 manteniendo último valor
+        last_val = vals[-1] if len(vals) > 0 else 0.0
+        if dias[-1] < 365:
+            # construir un array de 1 a 365
+            days_full = np.arange(1, 366)
+            vals_full = np.zeros(365)
+            # Rellenar los valores conocidos
+            for d, v in zip(dias, vals):
+                if 1 <= d <= 365:
+                    vals_full[d-1] = v
+            # A partir del último día, mantener valor constante
+            vals_full[dias[-1]:] = last_val
+        else:
+            # Si hay datos hasta el 365 (o más), simplemente tomar del 1 al 365
+            days_full = np.arange(1, 366)
+            vals_full = np.zeros(365)
+            for d, v in zip(dias, vals):
+                if 1 <= d <= 365:
+                    vals_full[d-1] = v
+            # Si hubiera valores más allá de 365, se ignoran
+        
+        # Curva no acumulada (ya está en vals_full)
+        curva_no_acum = vals_full
+        
+        # Curva acumulada: cumsum y luego normalizar para que último valor sea 1.0
+        curva_acum = np.cumsum(curva_no_acum)
+        if curva_acum[-1] != 0:
+            curva_acum = curva_acum / curva_acum[-1]
+        else:
+            # Evitar división por cero
+            curva_acum = curva_acum
+        
+        # Guardar curvas por año
+        curvas_no_acumuladas[year] = curva_no_acum
+        curvas_acumuladas[year] = curva_acum
+    
+    # Convertir diccionarios a arrays para cálculos globales
+    años = list(curvas_acumuladas.keys())
+    data_acum = np.vstack([curvas_acumuladas[a] for a in años])
+    
+    # 4. Slider para día juliano (única vez)
+    dia = st.slider("Selecciona el día juliano:", 1, 365, value=1, key="dia_slider")
+    
+    # 5. Estadísticas para el día seleccionado
+    # Índice en Python: día juliano 1 -> índice 0
+    idx = dia - 1
+    valores_dia = data_acum[:, idx]  # valores acumulados en ese día, por año
+    media = np.mean(valores_dia)
+    desviacion = np.std(valores_dia)
+    # Probabilidad de superar 50% (>= 0.5)
+    prob_supera = np.mean(valores_dia >= 0.5)
+    
+    st.write(f"Media de la curva **acumulada** en el día {dia}: {media:.3f}")
+    st.write(f"Desviación estándar: {desviacion:.3f}")
+    st.write(f"Probabilidad de haber superado el 50% del total acumulado en este día: {prob_supera:.2%}")
+    
+    # 6. Gráfico Altair con todas las curvas
+    # Preparar DataFrames largos para Altair
+    # Curvas acumuladas (formato largo)
+    df_acum = pd.DataFrame({
+        'día': np.tile(np.arange(1, 366), len(años)),
+        'Valor': np.concatenate([curvas_acumuladas[a] for a in años]),
+        'Año': np.repeat(años, 365)
+    })
+    # Curvas no acumuladas (formato largo)
+    df_no_acum = pd.DataFrame({
+        'día': np.tile(np.arange(1, 366), len(años)),
+        'Valor': np.concatenate([curvas_no_acumuladas[a] for a in años]),
+        'Año': np.repeat(años, 365)
+    })
+    # Curva promedio acumulada
+    media_acum = np.mean(data_acum, axis=0)
+    df_media = pd.DataFrame({
+        'día': np.arange(1, 366),
+        'Valor': media_acum
+    })
+    # Línea vertical para el día seleccionado
+    df_vline = pd.DataFrame({'día': [dia]})
+    
+    # Base para curvas acumuladas: líneas por año
+    lineas_acum = alt.Chart(df_acum).mark_line(opacity=0.7).encode(
+        x=alt.X('día:Q', title='Día juliano'),
+        y=alt.Y('Valor:Q', title='Curva Emergencia'),
+        color=alt.Color('Año:N', legend=None)
+    )
+    # Curvas no acumuladas: podemos usar líneas más finas o semi-transparentes
+    lineas_no_acum = alt.Chart(df_no_acum).mark_line(strokeDash=[4,2], opacity=0.5).encode(
+        x='día:Q', y='Valor:Q', color=alt.Color('Año:N', legend=None)
+    )
+    # Curva promedio acumulada: destacada (p.ej. negro punteado)
+    linea_media = alt.Chart(df_media).mark_line(color='black', strokeDash=[5,3], size=2).encode(
+        x='día:Q', y='Valor:Q'
+    )
+    # Línea vertical en el día seleccionado (regla roja)
+    vline = alt.Chart(df_vline).mark_rule(color='red').encode(x='día:Q')
+    
+    # Superponer todas las capas
+    chart = alt.layer(
+        lineas_acum,
+        lineas_no_acum,
+        linea_media,
+        vline
+    ).properties(
+        width=700, height=400,
+        title=f"Curvas acumuladas y no acumuladas por año (Día {dia} seleccionado)"
+    )
+    
+    st.altair_chart(chart, use_container_width=True)
 
