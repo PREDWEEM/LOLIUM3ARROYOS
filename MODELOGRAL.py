@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -122,16 +123,23 @@ linea_relativa = alt.Chart(df_relativa).mark_line(
 )
 
 # === COMBINAR TODAS LAS CAPAS ===
-grafico = alt.layer(lineas, linea_vertical, area_relativa, linea_relativa).resolve_scale(
-    y="independent"
+grafico = alt.layer(
+    lineas,
+    linea_vertical,
+    area_relativa,
+    linea_relativa
+).resolve_scale(y="independent").properties(
+    height=420,
+    title="Curvas de emergencia acumulada (años históricos) y emergencia relativa semanal (promedio)"
 )
 
+# === MOSTRAR GRÁFICO ===
 st.altair_chart(grafico, use_container_width=True)
 
+# === LEYENDA / EXPLICACIÓN ===
 st.caption("""
 🟢 **Curvas de emergencia acumulada:** líneas de colores (una por año).  
 ⚫ **Curva negra gruesa:** promedio histórico acumulado.  
 🟧 **Área naranja:** emergencia relativa semanal (incremento promedio semanal de emergencia).  
 🔴 **Línea roja punteada:** día juliano seleccionado.
 """)
-
