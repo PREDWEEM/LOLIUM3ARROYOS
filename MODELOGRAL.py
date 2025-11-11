@@ -9,15 +9,14 @@ import re
 # =============================================
 
 st.set_page_config(page_title="Emergencia Acumulada Histórica", layout="centered")
-st.title("Análisis histórico de emergencia acumulada")
+st.title("Análisis histórico de emergencia acumulada y emergencia relativa semanal")
 
 # === FUNCIÓN DE CARGA DE DATOS ===
 @st.cache_data
 def cargar_datos_normalizados():
-    archivos = ["2008.xlsx", "2009+.xlsx", "2011.xlsx", "2012.xlsx", 
+    archivos = ["2008.xlsx", "2009+.xlsx", "2011.xlsx", "2012.xlsx",
                 "2013.xlsx", "2014.xlsx", "2023.xlsx", "2024.xlsx", "2025.xlsx"]
-    curvas = []
-    etiquetas = []
+    curvas, etiquetas = [], []
     for archivo in archivos:
         try:
             datos = pd.read_excel(archivo, header=None)
@@ -36,7 +35,7 @@ def cargar_datos_normalizados():
         curva_acumulada = np.cumsum(valores_diarios)
         valor_final = curva_acumulada[-1]
         curva_norm = curva_acumulada / valor_final if valor_final != 0 else curva_acumulada
-        anno = re.match(r'^(\d+)', archivo)
+        anno = re.match(r"^(\d+)", archivo)
         etiqueta_anno = anno.group(1) if anno else archivo
         curvas.append(curva_norm)
         etiquetas.append(etiqueta_anno)
@@ -45,16 +44,14 @@ def cargar_datos_normalizados():
 
 # === CARGA DE DATOS ===
 curvas_historicas, etiquetas_annos = cargar_datos_normalizados()
-
 if curvas_historicas.size == 0:
     st.error("No se encontraron datos históricos para procesar.")
     st.stop()
 
 # === SLIDER DE DÍA JULIANO ===
 dia_seleccionado = st.slider(
-    "Seleccione el día juliano", 
-    min_value=1, max_value=365, value=180, 
-    key="dia_slider"
+    "Seleccione el día juliano",
+    min_value=1, max_value=365, value=180, key="dia_slider"
 )
 
 # === ESTADÍSTICAS PARA EL DÍA SELECCIONADO ===
@@ -82,39 +79,78 @@ for d, valor in zip(dias, curva_promedio):
 
 df_graf = pd.DataFrame(data_graf)
 
+# === CÁLCULO DE EMERGENCIA RELATIVA SEMANAL ===
+# Derivada diaria suavizada con ventana móvil de 7 días
+emergencia_diaria = np.diff(curva_promedio, prepend=0)
+emergencia_relativa = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
+
+df_relativa = pd.DataFrame({
+    "Día": dias,
+    "Emergencia relativa semanal": emergencia_relativa
+})
+
 # === GRÁFICO ===
+
+# Curvas anuales (finas)
 lineas = alt.Chart(df_graf).transform_filter(
     alt.datum.Año != "Promedio"
-).mark_line(opacity=0.6).encode(
+).mark_line(opacity=0.5).encode(
     x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Fracción:Q", title="Fracción acumulada del año", scale=alt.Scale(domain=[0, 1])),
+    y=alt.Y("Fracción:Q", title="Fracción acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
     color=alt.Color("Año:N", title="Año")
 )
 
-# Curva promedio en negro y más gruesa
+# Curva promedio negra destacada
 promedio = alt.Chart(df_graf[df_graf["Año"] == "Promedio"]).mark_line(
-    color="black",
-    strokeWidth=3
+    color="black", strokeWidth=3
 ).encode(
     x="Día:Q",
     y="Fracción:Q"
 )
 
-# Línea vertical roja punteada
+# Emergencia relativa semanal (área + línea discontinua)
+area_relativa = alt.Chart(df_relativa).mark_area(
+    color="orange", opacity=0.3
+).encode(
+    x="Día:Q",
+    y=alt.Y("Emergencia relativa semanal:Q",
+            title="Emergencia relativa semanal",
+            axis=alt.Axis(titleColor="orange"))
+)
+
+linea_relativa = alt.Chart(df_relativa).mark_line(
+    color="orange", strokeDash=[6, 3], strokeWidth=2
+).encode(
+    x="Día:Q",
+    y="Emergencia relativa semanal:Q"
+)
+
+# Línea vertical (día seleccionado)
 linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
     color="red", strokeDash=[4, 4]
 ).encode(x="Día:Q")
 
-# Combinar capas
-grafico = alt.layer(lineas, promedio, linea_vertical)
+# === COMBINAR TODAS LAS CAPAS ===
+grafico = alt.layer(
+    lineas,
+    promedio,
+    area_relativa,
+    linea_relativa,
+    linea_vertical
+).resolve_scale(y="independent").properties(
+    height=420,
+    title="Curvas de emergencia acumulada y emergencia relativa semanal (promedio histórico)"
+)
 
-# Mostrar gráfico
+# === MOSTRAR GRÁFICO ===
 st.altair_chart(grafico, use_container_width=True)
 
 # === LEYENDA ===
 st.caption("""
 🟢 **Curvas históricas:** cada año individual.  
 ⚫ **Curva negra gruesa:** promedio histórico acumulado.  
+🟧 **Área naranja:** emergencia relativa semanal (promedio, suavizada 7 días).  
+🟧 **Línea discontinua:** tendencia de emergencia relativa semanal.  
 🔴 **Línea roja punteada:** día juliano seleccionado.
 """)
 
