@@ -1,29 +1,27 @@
 # -*- coding: utf-8 -*-
 # 🌾 PREDWEEM — Predicción de curva de emergencia acumulada (1-ene → 1-may) desde meteorología diaria
-# Actualización: lectura automática de curvas históricas desde GitHub RAW
-# ---------------------------------------------------------------
-# - Lee archivo meteorológico (1 hoja por año)
-# - Descarga curvas de emergencia acumulada (1 archivo XLSX por año) desde GitHub
-# - Empareja por año y entrena un modelo MLPRegressor multisalida
-# - Permite predecir curva para un nuevo año solo con meteorología
-# ---------------------------------------------------------------
+# Versión completa: lectura desde GitHub + descarga persistente del modelo entrenado
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
-import io, re, joblib, requests, math
+import io, re, joblib, requests
 from io import BytesIO
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# ============== CONFIGURACIÓN STREAMLIT ==============
-st.set_page_config(page_title="PREDWEEM · Curva de emergencia desde meteo", layout="wide")
-st.title("🌾 PREDWEEM — Predicción de la curva de emergencia acumulada (1-ene → 1-may)")
+# ======================================================
+# 🔧 CONFIGURACIÓN
+# ======================================================
+st.set_page_config(page_title="PREDWEEM · Curva de emergencia", layout="wide")
+st.title("🌾 PREDWEEM — Predicción de curva de emergencia acumulada (1-ene → 1-may)")
 
-# ============== FUNCIONES AUXILIARES ==============
+# ======================================================
+# 🔹 FUNCIONES AUXILIARES
+# ======================================================
 COLMAP_METEO = {
     "fecha": ["fecha", "date"],
     "jd": ["dia juliano", "julian_days", "jd"],
@@ -116,7 +114,9 @@ def build_xy(meteo_dict, curvas_dict):
 
 def rmse(a,b): return np.sqrt(mean_squared_error(a,b))
 
-# ============== CARGA DE DATOS ==============
+# ======================================================
+# 🔹 CARGA DE DATOS
+# ======================================================
 st.sidebar.header("1️⃣ Cargar meteorología (una hoja por año)")
 meteo_file = st.sidebar.file_uploader("📂 Archivo Excel meteorológico", type=["xlsx","xls"])
 
@@ -132,7 +132,9 @@ neurons = st.sidebar.slider("Neuronas por capa", 16, 256, 64, 16)
 max_iter = st.sidebar.slider("Iteraciones", 200, 3000, 800, 100)
 btn_fit = st.sidebar.button("🚀 Entrenar modelo")
 
-# ============== PROCESAMIENTO ==============
+# ======================================================
+# 🔹 PROCESAMIENTO
+# ======================================================
 meteo_dict, curvas_dict = {}, {}
 if meteo_file:
     meteo_dict = load_meteo_sheets(meteo_file)
@@ -142,63 +144,76 @@ if btn_download and meteo_dict:
     curvas_dict = load_curve_from_github(meteo_dict.keys(), base_url)
     st.success(f"Descargadas {len(curvas_dict)} curvas desde GitHub.")
 
-if meteo_dict and curvas_dict:
+# ======================================================
+# 🔹 ENTRENAMIENTO Y VALIDACIÓN
+# ======================================================
+if btn_fit and meteo_dict and curvas_dict:
     X, Y, years = build_xy(meteo_dict, curvas_dict)
-    st.write(f"📈 Dataset combinado: {len(years)} años comunes")
-    st.write(f"X shape: {X.shape}, Y shape: {Y.shape}")
+    kf = KFold(n_splits=len(years))
+    metrics, preds = [], []
+    xsc, ysc = StandardScaler(), StandardScaler()
+    for train, test in kf.split(X):
+        Xtr, Xte = X[train], X[test]
+        Ytr, Yte = Y[train], Y[test]
+        Xtr_s, Xte_s = xsc.fit_transform(Xtr), xsc.transform(Xte)
+        Ytr_s = ysc.fit_transform(Ytr)
+        mlp = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
+        mlp.fit(Xtr_s, Ytr_s)
+        Yhat_s = mlp.predict(Xte_s)
+        Yhat = ysc.inverse_transform(Yhat_s)
+        metrics.append((years[test][0], rmse(Yte[0], Yhat[0]), mean_absolute_error(Yte[0], Yhat[0])))
+        preds.append((years[test][0], Yte[0], Yhat[0]))
 
-    # ========== Entrenamiento Leave-One-Year-Out ==========
-    if btn_fit:
-        kf = KFold(n_splits=len(years))
-        metrics = []
-        preds = []
-        xsc = StandardScaler()
-        ysc = StandardScaler()
-        for train, test in kf.split(X):
-            Xtr, Xte = X[train], X[test]
-            Ytr, Yte = Y[train], Y[test]
-            Xtr_s = xsc.fit_transform(Xtr)
-            Xte_s = xsc.transform(Xte)
-            Ytr_s = ysc.fit_transform(Ytr)
-            mlp = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
-            mlp.fit(Xtr_s, Ytr_s)
-            Yhat_s = mlp.predict(Xte_s)
-            Yhat = ysc.inverse_transform(Yhat_s)
-            m_rmse = rmse(Yte[0], Yhat[0])
-            m_mae = mean_absolute_error(Yte[0], Yhat[0])
-            metrics.append((years[test][0], m_rmse, m_mae))
-            preds.append((years[test][0], Yte[0], Yhat[0]))
-        dfm = pd.DataFrame(metrics, columns=["Año","RMSE","MAE"]).sort_values("Año")
-        st.dataframe(dfm)
+    dfm = pd.DataFrame(metrics, columns=["Año","RMSE","MAE"]).sort_values("Año")
+    st.subheader("📊 Métricas Leave-One-Year-Out")
+    st.dataframe(dfm, use_container_width=True)
 
-        st.subheader("Comparación curva real vs predicha")
-        year_sel = st.selectbox("Seleccionar año", dfm["Año"])
-        for y, yt, yp in preds:
-            if y == year_sel:
-                dias = np.arange(1,122)
-                plot_df = pd.DataFrame({
-                    "Día": np.concatenate([dias,dias]),
-                    "Valor": np.concatenate([yt,yp]),
-                    "Serie": ["Real"]*len(dias)+["Predicha"]*len(dias)
-                })
-                chart = alt.Chart(plot_df).mark_line().encode(
-                    x="Día:Q",
-                    y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0,1])),
-                    color="Serie:N"
-                )
-                st.altair_chart(chart, use_container_width=True)
-                break
+    st.subheader("📈 Comparación curva real vs predicha")
+    year_sel = st.selectbox("Seleccionar año", dfm["Año"])
+    for y, yt, yp in preds:
+        if y == year_sel:
+            dias = np.arange(1,122)
+            plot_df = pd.DataFrame({
+                "Día": np.concatenate([dias,dias]),
+                "Valor": np.concatenate([yt,yp]),
+                "Serie": ["Real"]*len(dias)+["Predicha"]*len(dias)
+            })
+            chart = alt.Chart(plot_df).mark_line().encode(
+                x="Día:Q",
+                y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
+                color="Serie:N"
+            )
+            st.altair_chart(chart, use_container_width=True)
+            break
 
-        # Entrenamiento final con todos los años
-        xsc.fit(X); ysc.fit(Y)
-        mlp_final = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
-        mlp_final.fit(xsc.transform(X), ysc.transform(Y))
-        bundle = {"xsc":xsc, "ysc":ysc, "mlp":mlp_final}
-        buf = io.BytesIO(); joblib.dump(bundle, buf)
-        st.download_button("💾 Descargar modelo entrenado (.joblib)", buf.getvalue(),
-                           file_name="modelo_curva_emergencia.joblib")
+    # ======= ENTRENAMIENTO FINAL Y ALMACENAMIENTO =======
+    xsc.fit(X); ysc.fit(Y)
+    mlp_final = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
+    mlp_final.fit(xsc.transform(X), ysc.transform(Y))
+    st.session_state["bundle"] = {"xsc": xsc, "ysc": ysc, "mlp": mlp_final}
+    st.success("✅ Modelo entrenado y almacenado en sesión.")
 
-# ============== PREDICCIÓN NUEVO AÑO ==============
+# ======================================================
+# 🔹 DESCARGA DEL MODELO ENTRENADO
+# ======================================================
+st.markdown("---")
+st.subheader("💾 Descargar modelo entrenado")
+
+if "bundle" in st.session_state:
+    buf = io.BytesIO()
+    joblib.dump(st.session_state["bundle"], buf)
+    st.download_button(
+        label="⬇️ Descargar modelo entrenado (.joblib)",
+        data=buf.getvalue(),
+        file_name="modelo_curva_emergencia.joblib",
+        mime="application/octet-stream"
+    )
+else:
+    st.info("Entrená un modelo para habilitar la descarga.")
+
+# ======================================================
+# 🔹 PREDICCIÓN NUEVO AÑO
+# ======================================================
 st.markdown("---")
 st.header("🔮 Predicción para un nuevo año (solo meteorología)")
 
@@ -230,4 +245,3 @@ if st.button("Predecir curva"):
                                file_name="curva_predicha.csv")
         except Exception as e:
             st.error(f"Error en predicción: {e}")
-
