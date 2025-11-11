@@ -15,8 +15,8 @@ st.title("Análisis histórico de emergencia acumulada y emergencia relativa sem
 # === FUNCIÓN DE CARGA DE DATOS ===
 @st.cache_data
 def cargar_datos_normalizados():
-    archivos = ["2008.xlsx", "2009+.xlsx", "2011.xlsx", "2012.xlsx",
-                "2013.xlsx", "2014.xlsx", "2023.xlsx", "2024.xlsx", "2025.xlsx"]
+    archivos = ["2008.xlsx", "2009.xlsx", "2011.xlsx", "2012.xlsx",
+                "2013.xlsx", "2014.xlsx", "2023.xlsx", "2024.xlsx", "2025.xlsx", "2010.xlsx"]
     curvas, etiquetas = [], []
     for archivo in archivos:
         try:
