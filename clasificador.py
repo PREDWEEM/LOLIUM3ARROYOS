@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM — Curvas de Emergencia (JD 300) · Versión Final
+# 🌾 PREDWEEM — Curvas de Emergencia (JD 300) · Versión Final Corregida
 # ===============================================================
 # - Genera curvas históricas desde GitHub RAW
 #   * Detecta automáticamente frecuencia: diaria → semanal (si paso=1 día)
@@ -34,21 +34,27 @@ st.title("🌾 PREDWEEM — Generador, Entrenador y Predictor (1-ene → JD 300)
 # =========================
 def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
     """Normaliza nombres y tipos para meteorología."""
-    df.columns = [c.lower().strip() for c in df.columns]
+    # Asegurar que los nombres de columnas sean strings (FIX principal)
+    df.columns = [str(c).lower().strip() for c in df.columns]
+
     ren = {
         "temperatura minima": "tmin", "tmin": "tmin", "t_min": "tmin",
         "temperatura maxima": "tmax", "tmax": "tmax", "t_max": "tmax",
         "precipitacion": "prec", "pp": "prec", "rain": "prec", "precip": "prec",
         "dia juliano": "jd", "julian_days": "jd"
     }
+
     for k, v in ren.items():
         if k in df.columns:
             df = df.rename(columns={k: v})
+
     if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce", dayfirst=True)
+
     for c in ["tmin", "tmax", "prec", "jd"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
     return df
 
 def slice_jan_to_oct(df: pd.DataFrame) -> pd.DataFrame:
@@ -89,7 +95,7 @@ tabs = st.tabs([
 ])
 
 # ===============================================================
-# 📈 TAB 1 — GENERADOR DE CURVAS AUTOMÁTICAS (GitHub RAW)
+# 📈 TAB 1 — GENERADOR DE CURVAS AUTOMÁTICAS
 # ===============================================================
 with tabs[0]:
     st.subheader("📦 Generar curvas automáticamente desde GitHub")
@@ -102,7 +108,6 @@ with tabs[0]:
     btn_gen = st.button("🚀 Generar curvas")
 
     def listar_archivos_github(base_url: str):
-        """Lista candidatos 2008..2030. GitHub RAW no expone índices."""
         return [f"{base_url}/{y}.xlsx" for y in range(2008, 2031)]
 
     def descargar_y_procesar(url: str):
@@ -113,35 +118,27 @@ with tabs[0]:
                 return None, None
             df = pd.read_excel(BytesIO(r.content), header=None)
 
-            # columnas esperadas: [dia, valor]
             dias = pd.to_numeric(df.iloc[:, 0], errors="coerce").dropna().astype(int).to_numpy()
             vals = pd.to_numeric(df.iloc[:, 1], errors="coerce").fillna(0).to_numpy()
-
             if len(dias) == 0 or len(vals) == 0:
                 return None, None
 
-            # --- detectar paso típico (1 = diaria, 7 = semanal)
             paso = int(np.median(np.diff(np.unique(np.sort(dias))))) if len(dias) > 1 else 7
-
             if paso == 1:
-                # diaria → convertir a semanal (promedio por ventanas contiguas de 7 días)
                 semanas_idx = np.arange(0, len(vals), 7)
-                vals_week = [vals[i:i + 7].mean() for i in semanas_idx]
-                dias_week = np.arange(1, len(vals_week) * 7 + 1, 7)
-                dias, vals = dias_week, np.array(vals_week)
+                vals = [vals[i:i + 7].mean() for i in semanas_idx]
+                dias = np.arange(1, len(vals) * 7 + 1, 7)
 
-            # vector diario (365)
             daily = np.zeros(365, dtype=float)
             for d, v in zip(dias, vals):
                 if 1 <= int(d) <= 365:
                     daily[int(d) - 1] = float(v)
 
-            # acumulada normalizada
             acum = np.cumsum(daily)
             if acum[-1] == 0:
                 return None, None
             curva = acum / acum[-1]
-            curva = curva[:300]  # JD 1..300
+            curva = curva[:300]
 
             anio = int(re.findall(r"(\d{4})", url)[0])
             return anio, curva
@@ -164,7 +161,6 @@ with tabs[0]:
         st.success(f"✅ Se generaron {len(curvas)} curvas (JD 1–300).")
         st.session_state["curvas_github"] = curvas
 
-        # Gráfico conjunto + promedio
         dias = np.arange(1, 301)
         data = []
         for y, c in sorted(curvas.items()):
@@ -183,7 +179,6 @@ with tabs[0]:
         ).properties(height=440)
         st.altair_chart(chart, use_container_width=True)
 
-        # Exportar CSV ancho (columnas por año)
         df_wide = df.pivot(index="Día", columns="Año", values="Emergencia acumulada").sort_index(axis=1).fillna(0)
         st.download_button(
             "⬇️ Descargar curvas históricas (CSV)",
@@ -208,20 +203,17 @@ with tabs[1]:
     meteo_dict = {}
 
     if meteo_file:
-        # Cargar todas las hojas por año, recortar y reindexar a 1..300
         sheets = pd.read_excel(meteo_file, sheet_name=None)
         out = {}
         for name, dfm in sheets.items():
             dfm = standardize_cols(dfm)
             dfm = slice_jan_to_oct(dfm)
 
-            # Año de la hoja o de la data
             try:
                 year = int(re.findall(r"\d{4}", name)[0])
             except:
                 year = int(dfm["fecha"].dt.year.mode().iloc[0]) if "fecha" in dfm.columns else None
 
-            # Asegurar jd
             if "jd" not in dfm.columns:
                 if "fecha" in dfm.columns and dfm["fecha"].notna().any():
                     dfm["jd"] = dfm["fecha"].dt.dayofyear - dfm["fecha"].dt.dayofyear.iloc[0] + 1
@@ -237,12 +229,9 @@ with tabs[1]:
 
     if btn_fit and meteo_dict and curvas_dict:
         X, Y, years = build_xy(meteo_dict, curvas_dict)
-
-        # Forzar normalización final=1
         for i in range(Y.shape[0]):
             Y[i] = Y[i] / (Y[i][-1] if Y[i][-1] != 0 else 1)
 
-        # Validación Leave-One-Year-Out
         kf = KFold(n_splits=len(years))
         metrics = []
         xsc, ysc = StandardScaler(), StandardScaler()
@@ -251,11 +240,9 @@ with tabs[1]:
             Ytr, Yte = Y[train], Y[test]
             Xtr_s, Xte_s = xsc.fit_transform(Xtr), xsc.transform(Xte)
             Ytr_s = ysc.fit_transform(Ytr)
-
             mlp = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
             mlp.fit(Xtr_s, Ytr_s)
             Yhat = ysc.inverse_transform(mlp.predict(Xte_s))
-
             rmse = float(np.sqrt(mean_squared_error(Yte[0], Yhat[0])))
             mae = float(mean_absolute_error(Yte[0], Yhat[0]))
             metrics.append((int(years[test][0]), rmse, mae))
@@ -263,7 +250,6 @@ with tabs[1]:
         dfm = pd.DataFrame(metrics, columns=["Año", "RMSE", "MAE"]).sort_values("Año")
         st.dataframe(dfm, use_container_width=True)
 
-        # Entrenamiento final
         xsc.fit(X); ysc.fit(Y)
         mlp_final = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
         mlp_final.fit(xsc.transform(X), ysc.transform(Y))
@@ -281,10 +267,10 @@ with tabs[1]:
         )
 
 # ===============================================================
-# 🔮 TAB 3 — PREDICCIÓN NUEVO AÑO (con histórico + eje secundario)
+# 🔮 TAB 3 — PREDICCIÓN NUEVO AÑO
 # ===============================================================
 with tabs[2]:
-    st.subheader("🔮 Predicción extendida (hasta JD 300) con comparación histórica")
+    st.subheader("🔮 Predicción extendida (hasta JD 300) con histórico + eje secundario")
 
     curvas_hist = st.session_state.get("curvas_github", {})
     show_hist_ref = st.checkbox("Mostrar banda histórica (min–max) y promedio", value=True)
@@ -304,7 +290,6 @@ with tabs[2]:
                 df = standardize_cols(df)
                 df = slice_jan_to_oct(df)
 
-                # Asegurar jd
                 if "jd" not in df.columns:
                     if "fecha" in df.columns and df["fecha"].notna().any():
                         df["jd"] = df["fecha"].dt.dayofyear - df["fecha"].dt.dayofyear.iloc[0] + 1
@@ -313,7 +298,6 @@ with tabs[2]:
 
                 df = df.set_index("jd").reindex(range(1, 301)).interpolate().fillna(0).reset_index()
 
-                # Predicción
                 xnew = np.concatenate([df["tmin"], df["tmax"], df["prec"]]).reshape(1, -1)
                 yhat = ysc.inverse_transform(mlp.predict(xsc.transform(xnew)))[0]
                 yhat = np.maximum.accumulate(yhat)
@@ -323,11 +307,9 @@ with tabs[2]:
                 dias = np.arange(1, 301)
                 df_pred = pd.DataFrame({"Día": dias, "Emergencia predicha": yhat})
 
-                # Emergencia relativa semanal (eje secundario)
                 rel = emerg_rel_semanal_desde_acum(yhat)
                 df_rel = pd.DataFrame({"Día": dias, "Emergencia relativa semanal": rel})
 
-                # Capas históricas
                 layers = []
                 if show_hist_ref and isinstance(curvas_hist, dict) and len(curvas_hist) > 0:
                     H = np.vstack([v[:300] for _, v in sorted(curvas_hist.items()) if len(v) >= 300])
@@ -346,15 +328,12 @@ with tabs[2]:
                     )
                     layers += [area_hist, line_mean]
 
-                # Acumulada predicha (eje Y izquierdo)
                 line_pred = alt.Chart(df_pred).mark_line(color="orange", strokeWidth=2.5).encode(
                     x=alt.X("Día:Q", title="Día juliano (1–300)"),
-                    y=alt.Y("Emergencia predicha:Q",
-                            title="Emergencia acumulada (0–1)",
+                    y=alt.Y("Emergencia predicha:Q", title="Emergencia acumulada (0–1)",
                             scale=alt.Scale(domain=[0, 1]))
                 )
 
-                # Relativa semanal (eje Y derecho)
                 area_rel = alt.Chart(df_rel).mark_area(color="steelblue", opacity=0.25).encode(
                     x="Día:Q",
                     y=alt.Y("Emergencia relativa semanal:Q",
@@ -367,15 +346,12 @@ with tabs[2]:
 
                 layers += [line_pred, area_rel, line_rel]
 
-                chart = alt.layer(*layers).resolve_scale(
-                    y='independent'
-                ).properties(
+                chart = alt.layer(*layers).resolve_scale(y='independent').properties(
                     height=480,
                     title="Curva predicha vs. histórico + Emergencia relativa semanal"
                 )
                 st.altair_chart(chart, use_container_width=True)
 
-                # Descargas
                 out = pd.DataFrame({"Día": dias,
                                     "Emergencia_predicha": yhat,
                                     "Emergencia_relativa_semanal": rel})
