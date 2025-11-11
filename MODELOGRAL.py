@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -54,7 +55,7 @@ dia_seleccionado = st.slider(
     min_value=1, max_value=365, value=180, key="dia_slider"
 )
 
-# === ESTADÍSTICAS PARA EL DÍA SELECCIONADO ===
+# === ESTADÍSTICAS ===
 idx = dia_seleccionado - 1
 valores_dia = curvas_historicas[:, idx]
 media = valores_dia.mean()
@@ -65,22 +66,20 @@ st.markdown(f"**Resultados para el día {dia_seleccionado}:**")
 st.write(f"- Emergencia acumulada promedio: **{media*100:.1f}%** (± {desviacion*100:.1f}%).")
 st.write(f"- Probabilidad de superar 50% del total anual: **{prob_supera_50*100:.1f}%**.")
 
-# === PREPARAR DATOS PARA EL GRÁFICO ===
+# === PREPARAR DATOS ===
 dias = np.arange(1, 366)
 data_graf = []
 for curva, anno in zip(curvas_historicas, etiquetas_annos):
     for d, valor in zip(dias, curva):
-        data_graf.append({"Día": d, "Año": anno, "Fracción": valor})
+        data_graf.append({"Día": d, "Año": anno, "Fracción acumulada": valor})
 
-# Agregar curva promedio
 curva_promedio = curvas_historicas.mean(axis=0)
 for d, valor in zip(dias, curva_promedio):
-    data_graf.append({"Día": d, "Año": "Promedio", "Fracción": valor})
+    data_graf.append({"Día": d, "Año": "Promedio", "Fracción acumulada": valor})
 
 df_graf = pd.DataFrame(data_graf)
 
 # === CÁLCULO DE EMERGENCIA RELATIVA SEMANAL ===
-# Derivada diaria suavizada con ventana móvil de 7 días
 emergencia_diaria = np.diff(curva_promedio, prepend=0)
 emergencia_relativa = np.convolve(emergencia_diaria, np.ones(7)/7, mode="same")
 
@@ -89,61 +88,68 @@ df_relativa = pd.DataFrame({
     "Emergencia relativa semanal": emergencia_relativa
 })
 
-# === GRÁFICO ===
+# === GRÁFICO DE EMERGENCIA ACUMULADA (EJE IZQ) ===
+base_acum = alt.Chart(df_graf)
 
-# Curvas anuales (finas)
-lineas = alt.Chart(df_graf).transform_filter(
-    alt.datum.Año != "Promedio"
+curvas = base_acum.transform_filter(
+    alt.datum["Año"] != "Promedio"
 ).mark_line(opacity=0.5).encode(
     x=alt.X("Día:Q", title="Día del año"),
-    y=alt.Y("Fracción:Q", title="Fracción acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
+    y=alt.Y("Fracción acumulada:Q",
+            title="Fracción acumulada (0–1)",
+            axis=alt.Axis(titleColor="steelblue")),
     color=alt.Color("Año:N", title="Año")
 )
 
-# Curva promedio negra destacada
-promedio = alt.Chart(df_graf[df_graf["Año"] == "Promedio"]).mark_line(
+promedio = base_acum.transform_filter(
+    alt.datum["Año"] == "Promedio"
+).mark_line(
     color="black", strokeWidth=3
 ).encode(
     x="Día:Q",
-    y="Fracción:Q"
+    y="Fracción acumulada:Q"
 )
 
-# Emergencia relativa semanal (área + línea discontinua)
-area_relativa = alt.Chart(df_relativa).mark_area(
+linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
+    color="red", strokeDash=[4, 4]
+).encode(x="Día:Q")
+
+# === GRÁFICO DE EMERGENCIA RELATIVA (EJE DER) ===
+base_rel = alt.Chart(df_relativa)
+
+area_relativa = base_rel.mark_area(
     color="orange", opacity=0.3
 ).encode(
     x="Día:Q",
     y=alt.Y("Emergencia relativa semanal:Q",
-            title="Emergencia relativa semanal",
-            axis=alt.Axis(titleColor="orange"))
+            axis=alt.Axis(title="Emergencia relativa semanal (0–1)",
+                         titleColor="orange"))
 )
 
-linea_relativa = alt.Chart(df_relativa).mark_line(
+linea_relativa = base_rel.mark_line(
     color="orange", strokeDash=[6, 3], strokeWidth=2
 ).encode(
     x="Día:Q",
     y="Emergencia relativa semanal:Q"
 )
 
-# Línea vertical (día seleccionado)
-linea_vertical = alt.Chart(pd.DataFrame({"Día": [dia_seleccionado]})).mark_rule(
-    color="red", strokeDash=[4, 4]
-).encode(x="Día:Q")
+# === COMBINAR COMO DOS GRÁFICOS INDEPENDIENTES CON EJE SECUNDARIO ===
+# Altair no renderiza dos ejes Y en la misma capa, así que usamos un overlay con 'layer' y configure_view(clip=False)
+grafico_acum = (curvas + promedio + linea_vertical).properties(height=420)
+grafico_rel = (area_relativa + linea_relativa).properties(height=420)
 
-# === COMBINAR TODAS LAS CAPAS ===
-grafico = alt.layer(
-    lineas,
-    promedio,
-    area_relativa,
-    linea_relativa,
-    linea_vertical
-).resolve_scale(y="independent").properties(
-    height=420,
-    title="Curvas de emergencia acumulada y emergencia relativa semanal (promedio histórico)"
+# Overlay con ejes independientes
+grafico_final = alt.layer(
+    grafico_acum,
+    grafico_rel
+).resolve_scale(
+    y='independent'
+).configure_view(clip=False).properties(
+    title="Curvas de emergencia acumulada (años históricos) y emergencia relativa semanal (promedio histórico)"
 )
 
-# === MOSTRAR GRÁFICO ===
-st.altair_chart(grafico, use_container_width=True)
+# === MOSTRAR ===
+st.altair_chart(grafico_final, use_container_width=True)
 
 # === LEYENDA ===
 st.caption("""
@@ -153,4 +159,3 @@ st.caption("""
 🟧 **Línea discontinua:** tendencia de emergencia relativa semanal.  
 🔴 **Línea roja punteada:** día juliano seleccionado.
 """)
-
