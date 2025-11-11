@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # 🌾 PREDWEEM — Generador + Entrenador + Predictor
 # Curvas de emergencia acumulada desde GitHub + modelo MLP de predicción
+# Versión estable con detección automática de 'jd'
 # ===============================================================
 
 import streamlit as st
@@ -111,7 +112,6 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("🤖 Entrenar modelo predictivo a partir de meteorología")
 
-    # === CARGA METEOROLOGÍA ===
     meteo_file = st.file_uploader("📂 Cargar archivo meteorológico (una hoja por año)", type=["xlsx","xls"])
     seed = st.number_input("Seed aleatoria", 0, 99999, 42)
     neurons = st.slider("Neuronas por capa", 16, 256, 64, 16)
@@ -123,13 +123,15 @@ with tabs[1]:
         df.columns = [c.lower().strip() for c in df.columns]
         ren = {"temperatura minima":"tmin","tmin":"tmin",
                "temperatura maxima":"tmax","tmax":"tmax",
-               "precipitacion":"prec","pp":"prec"}
+               "precipitacion":"prec","pp":"prec","rain":"prec"}
         for k,v in ren.items():
-            if k in df.columns: df = df.rename(columns={k:v})
+            if k in df.columns:
+                df = df.rename(columns={k:v})
         if "fecha" in df.columns:
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce", dayfirst=True)
         for c in ["tmin","tmax","prec"]:
-            if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
 
     def slice_jan_to_may(df):
@@ -140,16 +142,33 @@ with tabs[1]:
             df["jd"] = np.arange(1, len(df)+1)
         return df
 
+    # ✅ Versión robusta corregida
     def load_meteo_sheets(uploaded_xlsx):
         sheets = pd.read_excel(uploaded_xlsx, sheet_name=None)
         out = {}
         for name, df in sheets.items():
             df = standardize_cols(df)
             df = slice_jan_to_may(df)
-            try: year = int(re.findall(r"\d{4}", name)[0])
-            except: year = int(df["fecha"].dt.year.mode().iloc[0])
+
+            # Inferir año desde nombre o contenido
+            try:
+                year = int(re.findall(r"\d{4}", name)[0])
+            except:
+                year = int(df["fecha"].dt.year.mode().iloc[0]) if "fecha" in df.columns else None
+
+            # Generar jd si no existe
+            if "jd" not in df.columns:
+                if "fecha" in df.columns:
+                    df["jd"] = df["fecha"].dt.dayofyear - df["fecha"].dt.dayofyear.iloc[0] + 1
+                else:
+                    df["jd"] = np.arange(1, len(df) + 1)
+
+            # Reindexar y completar hasta 121 días
             df = df.set_index("jd").reindex(range(1,122)).interpolate().fillna(0).reset_index()
-            out[year] = df[["jd","tmin","tmax","prec"]]
+
+            # Guardar solo si tiene las 3 variables
+            if all(c in df.columns for c in ["tmin","tmax","prec"]):
+                out[year] = df[["jd","tmin","tmax","prec"]]
         return out
 
     def build_xy(meteo_dict, curvas_dict):
@@ -224,6 +243,11 @@ with tabs[2]:
                 df = pd.read_excel(meteo_pred)
                 df = standardize_cols(df)
                 df = slice_jan_to_may(df)
+                if "jd" not in df.columns:
+                    if "fecha" in df.columns:
+                        df["jd"] = df["fecha"].dt.dayofyear - df["fecha"].dt.dayofyear.iloc[0] + 1
+                    else:
+                        df["jd"] = np.arange(1, len(df)+1)
                 df = df.set_index("jd").reindex(range(1,122)).interpolate().fillna(0).reset_index()
                 xnew = np.concatenate([df["tmin"], df["tmax"], df["prec"]]).reshape(1,-1)
                 yhat = ysc.inverse_transform(mlp.predict(xsc.transform(xnew)))[0]
