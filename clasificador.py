@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM — Clasificador de patrones de emergencia (v4.3)
+# 🌾 PREDWEEM — Clasificador de patrones de emergencia (v4.4)
 # ===============================================================
 # - Entrena patrones prototipo (K-medoids sobre curvas históricas)
 # - Construye regresores para ajuste temporal (shift, scale)
 # - Clasifica nuevas curvas meteorológicas y predice la emergencia
 # - Compara la predicción con todos los patrones (RMSE + DTW)
+# - Panel diagnóstico: diferencia diaria y acumulada
 # ===============================================================
 
 import streamlit as st
@@ -19,8 +20,8 @@ from sklearn.preprocessing import StandardScaler
 # ======================
 # ⚙️ CONFIGURACIÓN
 # ======================
-st.set_page_config(page_title="PREDWEEM — Clasificador de Patrones v4.3", layout="wide")
-st.title("🌾 PREDWEEM — Clasificador y Comparador de Patrones (v4.3)")
+st.set_page_config(page_title="PREDWEEM — Clasificador de Patrones v4.4", layout="wide")
+st.title("🌾 PREDWEEM — Clasificador y Comparador de Patrones (v4.4)")
 
 JD_MAX = 274
 XRANGE = (1, JD_MAX)
@@ -29,7 +30,6 @@ XRANGE = (1, JD_MAX)
 # 🧩 FUNCIONES AUXILIARES
 # ===============================================================
 def standardize_cols(df):
-    """Normaliza nombres y detecta columnas meteorológicas automáticamente."""
     df = df.copy()
     df.columns = [str(c).lower().strip() for c in df.columns]
     ren = {
@@ -40,10 +40,9 @@ def standardize_cols(df):
         "fecha":"fecha","date":"fecha"
     }
     for k,v in ren.items():
-        if k in df.columns:
-            df = df.rename(columns={k:v})
+        if k in df.columns: df = df.rename(columns={k:v})
 
-    # Detección automática
+    # detección automática si faltan columnas
     if not any(c.startswith("tmin") for c in df.columns):
         for c in df.columns:
             if pd.api.types.is_numeric_dtype(df[c]) and df[c].dropna().between(-10,20).mean()>0.5:
@@ -63,14 +62,26 @@ def standardize_cols(df):
 
     if "fecha" in df.columns and isinstance(df["fecha"], pd.Series):
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce", dayfirst=True)
-
     return df
 
 
 def ensure_jd_1_to_274(df):
     """Asegura existencia y validez de columna jd (1D, 1–274)."""
     df = df.copy()
-    df.columns = pd.io.parsers.ParserBase({'names': df.columns})._maybe_dedup_names(df.columns)
+
+    # 🔧 Nombres únicos (sin ParserBase)
+    def _make_unique(names):
+        seen, out = {}, []
+        for n in names:
+            if n not in seen:
+                seen[n] = 0
+                out.append(n)
+            else:
+                seen[n] += 1
+                out.append(f"{n}.{seen[n]}")
+        return out
+
+    df.columns = _make_unique(df.columns)
 
     if "jd" not in df.columns:
         if "fecha" in df.columns and df["fecha"].notna().any():
@@ -78,30 +89,30 @@ def ensure_jd_1_to_274(df):
             df = df[(df["fecha"] >= f"{y0}-01-01") & (df["fecha"] <= f"{y0}-10-01")].copy().sort_values("fecha")
             df["jd"] = df["fecha"].dt.dayofyear - pd.Timestamp(f"{y0}-01-01").dayofyear + 1
         else:
-            df["jd"] = np.arange(1, len(df) + 1)
+            df["jd"] = np.arange(1, len(df)+1)
 
     if isinstance(df["jd"], pd.DataFrame):
-        df["jd"] = df["jd"].iloc[:, 0]
+        df["jd"] = df["jd"].iloc[:,0]
     df["jd"] = pd.to_numeric(df["jd"], errors="coerce").astype("Int64")
 
-    jd_range = np.arange(1, JD_MAX + 1)
-    df = (df.set_index("jd")
-          .reindex(jd_range)
-          .interpolate()
-          .ffill()
-          .bfill()
-          .reset_index())
+    jd_range = np.arange(1, JD_MAX+1)
+    df = (
+        df.set_index("jd")
+        .reindex(jd_range)
+        .interpolate()
+        .ffill()
+        .bfill()
+        .reset_index()
+    )
     return df
 
 
 def curva_desde_xlsx_anual(file):
-    """Convierte un XLSX anual a curva acumulada 0–1."""
     df = pd.read_excel(file, header=None)
     if df.shape[1] < 2:
         df = pd.read_excel(file)
     col0 = pd.to_numeric(df.iloc[:,0], errors="coerce")
     col1 = pd.to_numeric(df.iloc[:,1], errors="coerce")
-
     jd = col0.copy()
     if jd.isna().any():
         jd = jd.where(~jd.isna(), np.arange(1, len(df)+1))
@@ -119,11 +130,10 @@ def curva_desde_xlsx_anual(file):
 
 
 def build_features_meteo(dfm):
-    """Extrae rasgos meteorológicos resumidos."""
     dfm = standardize_cols(dfm)
     dfm = ensure_jd_1_to_274(dfm)
     tmin, tmax, prec = dfm["tmin"], dfm["tmax"], dfm["prec"]
-    tmed = (tmin + tmax) / 2
+    tmed = (tmin + tmax)/2
     jd = dfm["jd"].to_numpy(int)
     mask_FM = (jd>=32)&(jd<=151)
     gdd5 = np.cumsum(np.maximum(tmed-5,0))
@@ -176,13 +186,11 @@ with tabs[0]:
         if len(common)<3: st.error("⚠️ Se necesitan al menos 3 años coincidentes."); st.stop()
 
         curves=[curves_dict[y] for y in common]
-        # matriz de distancias
         D=np.zeros((len(curves),len(curves)))
         for i in range(len(curves)):
             for j in range(i+1,len(curves)):
                 D[i,j]=D[j,i]=dtw_distance(curves[i],curves[j])
 
-        # medoids
         medoids=list(np.argsort(D.sum(1))[:K])
         protos=[curves[i] for i in medoids]
         proto_years=[common[i] for i in medoids]
@@ -219,7 +227,7 @@ with tabs[0]:
                 "regs_shift":regs_shift,"regs_scale":regs_scale}
         buf=io.BytesIO(); joblib.dump(bundle,buf)
         st.download_button("💾 Descargar modelo entrenado",data=buf.getvalue(),
-                           file_name="predweem_v43.joblib",mime="application/octet-stream")
+                           file_name="predweem_v44.joblib",mime="application/octet-stream")
         st.success(f"✅ Modelo entrenado con {K} patrones.")
 
 
@@ -273,6 +281,7 @@ with tabs[1]:
 
         st.success(f"🏆 Patrón destacado: Escenario {best} ({best_year})")
 
+        # --- GRAFICOS ---
         dfp=[]
         for k in range(K):
             tipo="Destacado" if k==best else "Otros"
@@ -292,8 +301,23 @@ with tabs[1]:
             x=alt.X("Día:Q",scale=alt.Scale(domain=list(XRANGE))),
             y=alt.Y("Valor:Q",title="Emergencia acumulada (0–1)",scale=alt.Scale(domain=[0,1])),
             color=color_scale,size=stroke_scale,tooltip=["Serie","Tipo","Valor"]
-        ).properties(height=440,
+        ).properties(height=420,
                      title=f"Predicción vs Escenarios — resaltado Escenario {best} ({best_year})")
         st.altair_chart(chart,use_container_width=True)
         st.dataframe(dfc.sort_values("RMSE"),use_container_width=True)
 
+        # --- PANEL DIAGNÓSTICO ---
+        st.subheader("📊 Panel diagnóstico — Diferencia diaria y acumulada")
+        diff = mix - protos[best]
+        df_diag = pd.DataFrame({
+            "Día": dias,
+            "Δ diaria": diff,
+            "Δ acumulada": np.cumsum(diff)
+        })
+        chart_diag = alt.Chart(df_diag.melt("Día", var_name="Tipo", value_name="Valor")).mark_line().encode(
+            x="Día:Q",
+            y="Valor:Q",
+            color="Tipo:N",
+            tooltip=["Día","Tipo","Valor"]
+        ).properties(height=300,title="Diferencia predicción vs patrón destacado")
+        st.altair_chart(chart_diag,use_container_width=True)
