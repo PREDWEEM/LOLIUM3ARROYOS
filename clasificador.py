@@ -173,7 +173,7 @@ with tabs[0]:
     st.header("🧪 Entrenamiento")
     meteo = st.file_uploader("📘 Archivo meteorológico (una hoja por año)", type=["xlsx"])
     curvas = st.file_uploader("📈 Curvas históricas (una por año)", type=["xlsx"], accept_multiple_files=True)
-    K = st.slider("Número de patrones",2,6,4)
+    K = st.slider("Número de patrones",2,11,4)
     seed = st.number_input("Semilla aleatoria",0,99999,42)
 
     if st.button("🚀 Entrenar"):
