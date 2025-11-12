@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM — Clasificador de patrones de emergencia (v4.4)
-# ===============================================================
-# - Entrena patrones prototipo (K-medoids sobre curvas históricas)
-# - Construye regresores para ajuste temporal (shift, scale)
-# - Clasifica nuevas curvas meteorológicas y predice la emergencia
-# - Compara la predicción con todos los patrones (RMSE + DTW)
-# - Panel diagnóstico: diferencia diaria y acumulada
+# 🌾 PREDWEEM — Mixture-of-Prototypes (DTW + Monotone)
+# - Aprende K prototipos (k-medoids con DTW, sin libs extra)
+# - Clasifica patrón desde meteo (GradientBoostingClassifier)
+# - Curva predicha = mezcla convexa de prototipos + pequeño warp
+# - Garantiza monotonía (acumulado de incrementos >= 0)
+# - Robusto a NaN/rangos vacíos en meteorología
+# - Rango JD 1..274 (1-ene → 1-oct)
 # ===============================================================
 
 import streamlit as st
@@ -14,22 +14,21 @@ import numpy as np
 import pandas as pd
 import altair as alt
 import re, io, joblib
+from io import BytesIO
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# ======================
-# ⚙️ CONFIGURACIÓN
-# ======================
-st.set_page_config(page_title="PREDWEEM — Clasificador de Patrones v4.4", layout="wide")
-st.title("🌾 PREDWEEM — Clasificador y Comparador de Patrones (v4.4)")
+st.set_page_config(page_title="PREDWEEM — Mixture-of-Prototypes (DTW)", layout="wide")
+st.title("🌾 PREDWEEM — Mixture-of-Prototypes (DTW + Monotone) • JD 1..274")
 
 JD_MAX = 274
 XRANGE = (1, JD_MAX)
 
 # ===============================================================
-# 🧩 FUNCIONES AUXILIARES
+# UTILIDADES GENERALES
 # ===============================================================
-def standardize_cols(df):
+def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).lower().strip() for c in df.columns]
     ren = {
@@ -40,284 +39,511 @@ def standardize_cols(df):
         "fecha":"fecha","date":"fecha"
     }
     for k,v in ren.items():
-        if k in df.columns: df = df.rename(columns={k:v})
-
-    # detección automática si faltan columnas
-    if not any(c.startswith("tmin") for c in df.columns):
-        for c in df.columns:
-            if pd.api.types.is_numeric_dtype(df[c]) and df[c].dropna().between(-10,20).mean()>0.5:
-                df = df.rename(columns={c:"tmin"}); break
-    if not any(c.startswith("tmax") for c in df.columns):
-        for c in df.columns:
-            if pd.api.types.is_numeric_dtype(df[c]) and df[c].dropna().between(10,45).mean()>0.5:
-                df = df.rename(columns={c:"tmax"}); break
-    if not any(c.startswith("prec") for c in df.columns):
-        for c in df.columns:
-            if pd.api.types.is_numeric_dtype(df[c]) and df[c].dropna().between(0,200).mean()>0.5:
-                df = df.rename(columns={c:"prec"}); break
-
-    for c in ["tmin","tmax","prec","jd"]:
-        if c in df.columns and isinstance(df[c], pd.Series):
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    if "fecha" in df.columns and isinstance(df["fecha"], pd.Series):
+        if k in df.columns:
+            df = df.rename(columns={k:v})
+    if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce", dayfirst=True)
+    for c in ["tmin","tmax","prec","jd"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
-
-def ensure_jd_1_to_274(df):
-    """Asegura existencia y validez de columna jd (1D, 1–274)."""
+def ensure_jd_1_to_274(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-
-    # 🔧 Nombres únicos (sin ParserBase)
-    def _make_unique(names):
-        seen, out = {}, []
-        for n in names:
-            if n not in seen:
-                seen[n] = 0
-                out.append(n)
-            else:
-                seen[n] += 1
-                out.append(f"{n}.{seen[n]}")
-        return out
-
-    df.columns = _make_unique(df.columns)
-
     if "jd" not in df.columns:
         if "fecha" in df.columns and df["fecha"].notna().any():
             y0 = int(df["fecha"].dt.year.mode().iloc[0])
             df = df[(df["fecha"] >= f"{y0}-01-01") & (df["fecha"] <= f"{y0}-10-01")].copy().sort_values("fecha")
             df["jd"] = df["fecha"].dt.dayofyear - pd.Timestamp(f"{y0}-01-01").dayofyear + 1
         else:
-            df["jd"] = np.arange(1, len(df)+1)
-
-    if isinstance(df["jd"], pd.DataFrame):
-        df["jd"] = df["jd"].iloc[:,0]
-    df["jd"] = pd.to_numeric(df["jd"], errors="coerce").astype("Int64")
-
-    jd_range = np.arange(1, JD_MAX+1)
-    df = (
-        df.set_index("jd")
-        .reindex(jd_range)
-        .interpolate()
-        .ffill()
-        .bfill()
-        .reset_index()
-    )
+            df["jd"] = np.arange(1, len(df) + 1)
+    df = (df.set_index("jd")
+            .reindex(range(1, JD_MAX+1))
+            .interpolate()
+            .ffill().bfill()
+            .reset_index())
     return df
 
-
-def curva_desde_xlsx_anual(file):
+def curva_desde_xlsx_anual(file) -> np.ndarray:
+    """
+    Lee XLSX con dos columnas [día/fecha, valor] (diaria o semanal) y devuelve curva
+    acumulada 0..1 (JD 1..274). Si la serie es semanal, suaviza con ventana 7.
+    """
     df = pd.read_excel(file, header=None)
     if df.shape[1] < 2:
         df = pd.read_excel(file)
     col0 = pd.to_numeric(df.iloc[:,0], errors="coerce")
     col1 = pd.to_numeric(df.iloc[:,1], errors="coerce")
-    jd = col0.copy()
-    if jd.isna().any():
-        jd = jd.where(~jd.isna(), np.arange(1, len(df)+1))
-    val = col1.fillna(0.0)
 
-    daily = np.zeros(365)
-    for d,v in zip(jd,val):
-        if pd.notna(d) and 1 <= int(d) <= 365:
-            daily[int(d)-1] += float(v)
+    if col0.isna().mean() > 0.5:
+        fch = pd.to_datetime(df.iloc[:,0], errors="coerce", dayfirst=True)
+        jd  = fch.dt.dayofyear
+        val = pd.to_numeric(df.iloc[:,1], errors="coerce").fillna(0.0)
+    else:
+        jd  = col0.astype("Int64")
+        val = col1.fillna(0.0)
+
+    jd_clean = jd.dropna().astype(int).sort_values().unique()
+    paso = int(np.median(np.diff(jd_clean))) if len(jd_clean)>1 else 7
+
+    daily = np.zeros(365, dtype=float)
+    if paso == 1:
+        for d,v in zip(jd,val):
+            if pd.notna(d) and 1 <= int(d) <= 365:
+                daily[int(d)-1] += float(v)
+    else:
+        for d,v in zip(jd,val):
+            if pd.notna(d) and 1 <= int(d) <= 365:
+                daily[int(d)-1] += float(v)
+        daily = np.convolve(daily, np.ones(7)/7, mode="same")
+
     acum = np.cumsum(daily)
-    if np.nanmax(acum)==0:
-        return np.zeros(JD_MAX)
+    if np.nanmax(acum) == 0:
+        return np.zeros(JD_MAX, dtype=float)
     curva = (acum / np.nanmax(acum))[:JD_MAX]
-    return np.maximum.accumulate(np.clip(curva,0,1))
+    return np.maximum.accumulate(curva)
 
+def emerg_rel_7d_from_acum(y_acum: np.ndarray) -> np.ndarray:
+    inc = np.diff(np.insert(y_acum, 0, 0.0))
+    return np.convolve(inc, np.ones(7)/7, mode="same")
 
-def build_features_meteo(dfm):
+# ===============================================================
+# FEATURES METEOROLÓGICAS (ROBUSTO)
+# ===============================================================
+def build_features_meteo(dfm: pd.DataFrame):
     dfm = standardize_cols(dfm)
     dfm = ensure_jd_1_to_274(dfm)
-    tmin, tmax, prec = dfm["tmin"], dfm["tmax"], dfm["prec"]
-    tmed = (tmin + tmax)/2
+    tmin = dfm["tmin"].to_numpy(float)
+    tmax = dfm["tmax"].to_numpy(float)
+    tmed = (tmin + tmax) / 2.0
+    prec = dfm["prec"].to_numpy(float)
     jd = dfm["jd"].to_numpy(int)
-    mask_FM = (jd>=32)&(jd<=151)
-    gdd5 = np.cumsum(np.maximum(tmed-5,0))
-    f = {
-        "pp_FM": np.nansum(prec[mask_FM]) if np.any(mask_FM) else np.nansum(prec),
-        "gdd5_FM": np.ptp(gdd5[mask_FM]) if np.any(mask_FM) else np.ptp(gdd5),
-        "tmed14_May": float(pd.Series(tmed).rolling(14,min_periods=1).mean().iloc[min(150,len(tmed)-1)]),
-        "tmed28_May": float(pd.Series(tmed).rolling(28,min_periods=1).mean().iloc[min(150,len(tmed)-1)]),
-        "pp_120": np.nansum(prec[:min(120,len(prec))])
-    }
+
+    mask_FM = (jd >= 32) & (jd <= 151)  # Feb–May aprox
+    gdd5 = np.cumsum(np.maximum(tmed - 5, 0))
+    gdd3 = np.cumsum(np.maximum(tmed - 3, 0))
+
+    if not np.any(mask_FM):
+        mask_FM = np.ones_like(jd, dtype=bool)
+
+    safe = lambda arr, func=np.ptp: float(func(arr[mask_FM])) if np.any(~np.isnan(arr[mask_FM])) else 0.0
+    f = {}
+    f["gdd5_FM"] = safe(gdd5)
+    f["gdd3_FM"] = safe(gdd3)
+
+    pf = prec[mask_FM]
+    if pf.size == 0 or np.all(np.isnan(pf)):
+        pf = np.zeros(1)
+    f["pp_FM"] = np.nansum(pf)
+    f["ev10_FM"] = int(np.nansum(pf >= 10))
+    f["ev20_FM"] = int(np.nansum(pf >= 20))
+
+    dry = np.nan_to_num(pf < 1, nan=0).astype(int)
+    wet = np.nan_to_num(pf >= 5, nan=0).astype(int)
+
+    def longest_run(x):
+        c = m = 0
+        for v in x:
+            c = c + 1 if v == 1 else 0
+            m = max(m, c)
+        return m
+    f["dry_run_FM"] = longest_run(dry)
+    f["wet_run_FM"] = longest_run(wet)
+
+    def ma(x, w):
+        k = np.ones(w) / w
+        return np.convolve(x, k, "same")
+
+    idx_may = np.clip(151, 0, len(tmed) - 1)
+    f["tmed14_May"] = float(ma(tmed, 14)[idx_may])
+    f["tmed28_May"] = float(ma(tmed, 28)[idx_may])
+
+    idx_120 = min(119, len(tmed) - 1)
+    f["gdd5_120"] = float(gdd5[idx_120])
+    f["pp_120"] = float(np.nansum(prec[: idx_120 + 1]))
+
     return dfm, f
 
+# ===============================================================
+# DTW + K-MEDOIDS (SIN DEPENDENCIAS EXTERNAS)
+# ===============================================================
+def dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
+    n, m = len(a), len(b)
+    D = np.full((n+1, m+1), np.inf, dtype=float)
+    D[0,0] = 0.0
+    for i in range(1, n+1):
+        ai = a[i-1]
+        for j in range(1, m+1):
+            cost = (ai - b[j-1])**2
+            D[i,j] = cost + min(D[i-1,j], D[i,j-1], D[i-1,j-1])
+    return float(np.sqrt(D[n,m]))
 
-def dtw_distance(a,b):
-    n,m=len(a),len(b)
-    D=np.full((n+1,m+1),np.inf); D[0,0]=0
-    for i in range(1,n+1):
-        for j in range(1,m+1):
-            cost=(a[i-1]-b[j-1])**2
-            D[i,j]=cost+min(D[i-1,j],D[i,j-1],D[i-1,j-1])
-    return np.sqrt(D[n,m])
+def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
+    rng = np.random.default_rng(seed)
+    N = len(curves)
+    if K > N:
+        K = N
+    idx = rng.choice(N, size=K, replace=False)
+    medoid_idx = list(idx)
 
+    # Matriz de distancias
+    D = np.zeros((N,N), float)
+    for i in range(N):
+        for j in range(i+1, N):
+            d = dtw_distance(curves[i], curves[j])
+            D[i,j] = D[j,i] = d
 
-def warp(proto,sh,sc):
-    t=np.arange(1,JD_MAX+1)
-    tp=np.clip((t-sh)/max(sc,1e-6),1,JD_MAX)
-    yv=np.interp(tp,np.arange(1,JD_MAX+1),proto)
-    return np.maximum.accumulate(np.clip(yv,0,1))
+    for _ in range(max_iter):
+        assign = np.argmin(D[:, medoid_idx], axis=1)
+        new_medoids = []
+        for k in range(K):
+            members = np.where(assign==k)[0]
+            if len(members)==0:
+                new_medoids.append(medoid_idx[k])
+                continue
+            subD = D[np.ix_(members, members)]
+            sums = subD.sum(axis=1)
+            chosen = members[np.argmin(sums)]
+            new_medoids.append(chosen)
+        if new_medoids == medoid_idx:
+            break
+        medoid_idx = new_medoids
+
+    clusters = {k: [] for k in range(K)}
+    assign = np.argmin(D[:, medoid_idx], axis=1)
+    for i in range(N): clusters[int(assign[i])].append(i)
+    return medoid_idx, clusters, D
 
 # ===============================================================
-# 🧭 INTERFAZ STREAMLIT
+# APP — TABS
 # ===============================================================
-tabs = st.tabs(["🧪 Entrenar modelo","🔮 Predecir y comparar"])
+tabs = st.tabs(["🧪 Entrenar prototipos + clasificador", "🔮 Predecir nueva curva", "📊 Evaluar"])
 
-# ----------------------- ENTRENAMIENTO --------------------------
+# ---------------------------------------------------------------
+# TAB 1 — ENTRENAMIENTO
+# ---------------------------------------------------------------
 with tabs[0]:
-    st.header("🧪 Entrenamiento")
-    meteo = st.file_uploader("📘 Archivo meteorológico (una hoja por año)", type=["xlsx"])
-    curvas = st.file_uploader("📈 Curvas históricas (una por año)", type=["xlsx"], accept_multiple_files=True)
-    K = st.slider("Número de patrones",2,11,4)
-    seed = st.number_input("Semilla aleatoria",0,99999,42)
+    st.subheader("🧪 Entrenamiento (k-medoids DTW + mezcla de prototipos)")
+    st.markdown("Subí **meteorología multianual** y **curvas históricas** (XLSX por año).")
+    meteo_book = st.file_uploader("📘 Meteorología multianual (una hoja por año)", type=["xlsx","xls"])
+    curvas_files = st.file_uploader("📈 Curvas históricas (XLSX por año, acumulada o semanal)", type=["xlsx","xls"], accept_multiple_files=True)
 
-    if st.button("🚀 Entrenar"):
-        sheets = pd.read_excel(meteo,sheet_name=None)
-        meteo_dict={int(re.findall(r"\d{4}",n)[0]):ensure_jd_1_to_274(d)
-                    for n,d in sheets.items() if re.findall(r"\d{4}",n)}
-        curves_dict={int(re.findall(r"\d{4}",f.name)[0]):curva_desde_xlsx_anual(f)
-                     for f in curvas}
-        common=sorted(set(meteo_dict)&set(curves_dict))
-        if len(common)<3: st.error("⚠️ Se necesitan al menos 3 años coincidentes."); st.stop()
+    K = st.slider("Número de prototipos/patrones (K)", 2, 6, 4, 1)
+    seed = st.number_input("Semilla", 0, 99999, 42)
+    btn_train = st.button("🚀 Entrenar")
 
-        curves=[curves_dict[y] for y in common]
-        D=np.zeros((len(curves),len(curves)))
-        for i in range(len(curves)):
-            for j in range(i+1,len(curves)):
-                D[i,j]=D[j,i]=dtw_distance(curves[i],curves[j])
+    if btn_train:
+        if not (meteo_book and curvas_files):
+            st.error("Cargá ambos conjuntos: meteo y curvas.")
+            st.stop()
 
-        medoids=list(np.argsort(D.sum(1))[:K])
-        protos=[curves[i] for i in medoids]
-        proto_years=[common[i] for i in medoids]
+        # 1) Leer meteo por año
+        sheets = pd.read_excel(meteo_book, sheet_name=None)
+        meteo_dict = {}
+        for name, df in sheets.items():
+            df = standardize_cols(df)
+            df = ensure_jd_1_to_274(df)
+            try:
+                year = int(re.findall(r"\d{4}", str(name))[0])
+            except:
+                if "fecha" in df.columns and df["fecha"].notna().any():
+                    year = int(df["fecha"].dt.year.mode().iloc[0])
+                else:
+                    year = None
+            if year and all(c in df.columns for c in ["tmin","tmax","prec"]):
+                meteo_dict[year] = df[["jd","tmin","tmax","prec"]].copy()
 
-        feats,labels,feat_names=[],[],None
-        assign=np.argmin(D[:,medoids],axis=1)
-        for i,y in enumerate(common):
-            _,f=build_features_meteo(meteo_dict[y])
-            if feat_names is None: feat_names=sorted(f)
-            feats.append([f[k] for k in feat_names])
-            labels.append(assign[i])
-        X=np.array(feats)
-        xsc=StandardScaler().fit(X)
-        Xs=xsc.transform(X)
-        clf=GradientBoostingClassifier(random_state=seed).fit(Xs,labels)
+        if not meteo_dict:
+            st.error("⛔ No se detectó meteorología válida por año.")
+            st.stop()
+        st.success(f"✅ Meteorología válida: {len(meteo_dict)} años")
 
-        regs_shift,regs_scale={},{}
+        # 2) Leer curvas por año
+        years_list, curves_list = [], []
+        for f in curvas_files:
+            y4 = re.findall(r"(\d{4})", f.name)
+            year = int(y4[0]) if y4 else None
+            if year is None:
+                continue
+            curva = np.maximum.accumulate(curva_desde_xlsx_anual(f))
+            if curva.max() > 0:
+                curves_list.append(curva[:JD_MAX])
+                years_list.append(year)
+
+        if not years_list:
+            st.error("⛔ No se detectaron curvas válidas.")
+            st.stop()
+
+        # 3) Intersección meteo–curvas
+        common = sorted([y for y in years_list if y in meteo_dict])
+        if len(common) < 3:
+            st.error("⛔ Muy pocos años en común (se recomienda ≥ 5).")
+            st.stop()
+
+        curves = [curves_list[years_list.index(y)] for y in common]
+
+        # 4) k-medoids (DTW)
+        st.info("🧮 Calculando k-medoids (DTW)...")
+        medoid_idx, clusters, D = k_medoids_dtw(curves, K=K, max_iter=50, seed=seed)
+        protos = [curves[i] for i in medoid_idx]
+
+        # 5) Features desde meteo + etiqueta de cluster por año
+        feat_rows, y_labels = [], []
+        feat_names = None
+        for y in common:
+            dfm, f = build_features_meteo(meteo_dict[y])
+            if feat_names is None: feat_names = sorted(f.keys())
+            feat_rows.append([f[k] for k in feat_names])
+        assign = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # índice de cluster 0..K-1
+        y_labels = assign.astype(int)
+
+        X = np.array(feat_rows, float)
+        y = y_labels
+        xsc = StandardScaler().fit(X)
+        Xs = xsc.transform(X)
+
+        # 6) Clasificador de patrón
+        clf = GradientBoostingClassifier(random_state=seed)
+        clf.fit(Xs, y)
+
+        # 7) Warps (shift/scale) por cluster
+        regs_shift = {}
+        regs_scale = {}
+        t = np.arange(1, JD_MAX+1, dtype=float)
+
+        def warp_curve(proto, shift, scale):
+            tp = (t - shift) / max(scale, 1e-6)
+            tp = np.clip(tp, 1, JD_MAX)
+            yv = np.interp(tp, np.arange(1, JD_MAX+1, dtype=float), proto)
+            return np.maximum.accumulate(np.clip(yv, 0, 1))
+
         for k in range(K):
-            idx=np.where(assign==k)[0]; Xk=[];shs=[];scs=[]
-            for i in idx:
-                best=(0,1,1e9)
-                for sh in range(-20,21,5):
-                    for sc in [0.9,0.95,1,1.05,1.1]:
-                        rmse=np.sqrt(np.mean((warp(protos[k],sh,sc)-curves[i])**2))
-                        if rmse<best[2]: best=(sh,sc,rmse)
-                Xk.append(Xs[i]); shs.append(best[0]); scs.append(best[1])
-            if Xk:
-                Xk=np.vstack(Xk)
-                regs_shift[k]=GradientBoostingRegressor().fit(Xk,shs)
-                regs_scale[k]=GradientBoostingRegressor().fit(Xk,scs)
+            idx = np.where(y==k)[0]
+            if len(idx)==0:
+                regs_shift[k] = GradientBoostingRegressor(random_state=seed)
+                regs_scale[k] = GradientBoostingRegressor(random_state=seed)
+                continue
+            proto = protos[k]
+            shifts, scales, Xk = [], [], []
+            for ii in idx:
+                curv = curves[ii]
+                best = (0.0, 1.0, 1e9)
+                for sh in range(-20, 21, 5):       # ±20 días
+                    for sc in [0.9, 0.95, 1.0, 1.05, 1.1]:
+                        cand = warp_curve(proto, sh, sc)
+                        rmse = float(np.sqrt(np.mean((cand - curv)**2)))
+                        if rmse < best[2]:
+                            best = (float(sh), float(sc), rmse)
+                shifts.append(best[0]); scales.append(best[1]); Xk.append(Xs[ii])
+            Xk = np.vstack(Xk)
+            regs_shift[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(shifts))
+            regs_scale[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(scales))
 
-        bundle={"xsc":xsc,"feat_names":feat_names,"clf":clf,
-                "protos":np.vstack(protos),"proto_years":np.array(proto_years),
-                "regs_shift":regs_shift,"regs_scale":regs_scale}
-        buf=io.BytesIO(); joblib.dump(bundle,buf)
-        st.download_button("💾 Descargar modelo entrenado",data=buf.getvalue(),
-                           file_name="predweem_v44.joblib",mime="application/octet-stream")
-        st.success(f"✅ Modelo entrenado con {K} patrones.")
+        # 8) Guardar bundle
+        bundle = {
+            "xsc": xsc,
+            "feat_names": feat_names,
+            "clf": clf,
+            "protos": np.vstack(protos),  # K x 274
+            "regs_shift": regs_shift,
+            "regs_scale": regs_scale
+        }
+        st.success(f"✅ Entrenamiento OK. K={K} prototipos.")
+        st.session_state["mix_bundle"] = bundle
 
-
-# ----------------------- PREDICCIÓN -----------------------------
-with tabs[1]:
-    st.header("🔮 Predicción y comparación")
-    modelo_file=st.file_uploader("📦 Modelo entrenado (.joblib)",type=["joblib"])
-    meteo_file=st.file_uploader("📘 Meteorología nueva (xlsx)",type=["xlsx"])
-    peso_fm=st.slider("Peso Feb–May",1.0,4.0,2.0,0.5)
-
-    if st.button("🚀 Predecir"):
-        bundle=joblib.load(modelo_file)
-        xsc,feat_names,clf=bundle["xsc"],bundle["feat_names"],bundle["clf"]
-        protos,proto_years=bundle["protos"],bundle["proto_years"]
-        regs_shift,regs_scale=bundle["regs_shift"],bundle["regs_scale"]
-        K=protos.shape[0]
-
-        df,f=build_features_meteo(pd.read_excel(meteo_file))
-        X=np.array([[f[k] for k in sorted(feat_names)]],float)
-        Xs=xsc.transform(X)
-        proba=clf.predict_proba(Xs)[0]
-        k_hat=int(np.argmax(proba))
-        shift=float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0
-        scale=float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1
-        scale=np.clip(scale,0.9,1.1)
-
-        mix=np.zeros(JD_MAX)
-        for k in range(K):
-            mix+=proba[k]*warp(protos[k],shift if k==k_hat else 0,scale if k==k_hat else 1)
-
-        dias=np.arange(1,JD_MAX+1)
-        mask=(dias>=32)&(dias<=151); w=np.ones_like(dias); w[mask]=peso_fm
-
-        comps=[]
-        for k in range(K):
-            rmse=np.sqrt(np.sum((mix-protos[k])**2*w)/np.sum(w))
-            dtw_sim=dtw_distance(mix,protos[k])
-            comps.append((k,int(proto_years[k]),rmse,dtw_sim,float(proba[k])))
-        dfc=pd.DataFrame(comps,columns=["Cluster","Año_proto","RMSE","DTW","Probabilidad"])
-        dfc["Similitud_%"]=100*(1-dfc["DTW"]/dfc["DTW"].max())
-        best=int(dfc.loc[dfc["RMSE"].idxmin(),"Cluster"])
-        best_year=int(dfc.loc[dfc["RMSE"].idxmin(),"Año_proto"])
-
-        st.sidebar.subheader("🧭 Selección manual de patrón")
-        manual_sel=st.sidebar.selectbox(
-            "Elegir patrón a destacar",
-            ["Automático (más similar)"]+[f"Escenario {i} ({int(proto_years[i])})" for i in range(K)]
+        buf = io.BytesIO()
+        joblib.dump(bundle, buf)
+        st.download_button(
+            "💾 Descargar modelo (joblib)",
+            data=buf.getvalue(),
+            file_name=f"predweem_mixture_dtw_K{K}.joblib",
+            mime="application/octet-stream"
         )
-        if manual_sel.startswith("Escenario"):
-            best=int(re.findall(r"\d+",manual_sel)[0]); best_year=int(proto_years[best])
 
-        st.success(f"🏆 Patrón destacado: Escenario {best} ({best_year})")
+        # 9) Vista rápida de prototipos
+        dias = np.arange(1, JD_MAX+1)
+        dfp = []
+        for k,proto in enumerate(protos):
+            dfp.append(pd.DataFrame({"Día": dias, "Valor": proto, "Serie": f"Proto {k}"}))
+        dfp = pd.concat(dfp)
+        chart = alt.Chart(dfp).mark_line().encode(
+            x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
+            y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
+            color="Serie:N"
+        ).properties(height=420, title="Prototipos (medoids DTW)")
+        st.altair_chart(chart, use_container_width=True)
 
-        # --- GRAFICOS ---
-        dfp=[]
+# ---------------------------------------------------------------
+# TAB 2 — PREDICCIÓN
+# ---------------------------------------------------------------
+with tabs[1]:
+    st.subheader("🔮 Predicción a partir de meteorología nueva")
+    modelo_file = st.file_uploader("📦 Modelo (predweem_mixture_dtw_*.joblib)", type=["joblib"])
+    meteo_file  = st.file_uploader("📘 Meteorología nueva (XLSX)", type=["xlsx","xls"])
+    btn_pred = st.button("🚀 Predecir")
+
+    if btn_pred:
+        if not (modelo_file and meteo_file):
+            st.error("Cargá el modelo y la meteo.")
+            st.stop()
+        bundle = joblib.load(modelo_file)
+        xsc = bundle["xsc"]; feat_names = bundle["feat_names"]; clf = bundle["clf"]
+        protos = bundle["protos"]
+        regs_shift = bundle["regs_shift"]; regs_scale = bundle["regs_scale"]
+        K = protos.shape[0]
+
+        # features desde meteo
+        dfm = pd.read_excel(meteo_file)
+        dfm, f = build_features_meteo(dfm)
+        X = np.array([[f[k] for k in sorted(feat_names)]], float)
+        Xs = xsc.transform(X)
+
+        # patrón (cluster) + probabilidades
+        proba = clf.predict_proba(Xs)[0]  # shape (K,)
+        k_hat = int(np.argmax(proba))
+
+        # warp predicho
+        shift = float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0.0
+        scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        scale = float(np.clip(scale, 0.9, 1.1))
+
+        # mezcla convexa de prototipos (warp solo al prototipo dominante)
+        t = np.arange(1, JD_MAX+1, dtype=float)
+        def warp_curve(proto, sh, sc):
+            tp = (t - sh)/max(sc, 1e-6); tp = np.clip(tp, 1, JD_MAX)
+            yv = np.interp(tp, np.arange(1, JD_MAX+1, dtype=float), proto)
+            return np.maximum.accumulate(np.clip(yv, 0, 1))
+
+        mix = np.zeros(JD_MAX, float)
         for k in range(K):
-            tipo="Destacado" if k==best else "Otros"
-            dfp.append(pd.DataFrame({"Día":dias,"Valor":protos[k],
-                                     "Serie":f"Escenario {k} ({int(proto_years[k])})","Tipo":tipo}))
-        dfp.append(pd.DataFrame({"Día":dias,"Valor":mix,"Serie":"Predicción","Tipo":"Predicción"}))
-        dfp=pd.concat(dfp)
+            yk = warp_curve(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
+            mix += float(proba[k]) * yk
+        mix = np.maximum.accumulate(np.clip(mix, 0, 1))
 
-        color_scale=alt.Color("Tipo:N",
-                              scale=alt.Scale(domain=["Predicción","Destacado","Otros"],
-                                              range=["#E67300","#0072B2","#CCCCCC"]))
-        stroke_scale=alt.Size("Tipo:N",
-                              scale=alt.Scale(domain=["Predicción","Destacado","Otros"],
-                                              range=[3,3,1]),legend=None)
+        dias = np.arange(1, JD_MAX+1)
+        df_pred = pd.DataFrame({"Día": dias, "Emergencia predicha": mix})
+        df_proba = pd.DataFrame({"Cluster": [f"C{k}" for k in range(K)], "Probabilidad": proba}).sort_values("Probabilidad", ascending=False)
 
-        chart=alt.Chart(dfp).mark_line().encode(
-            x=alt.X("Día:Q",scale=alt.Scale(domain=list(XRANGE))),
-            y=alt.Y("Valor:Q",title="Emergencia acumulada (0–1)",scale=alt.Scale(domain=[0,1])),
-            color=color_scale,size=stroke_scale,tooltip=["Serie","Tipo","Valor"]
-        ).properties(height=420,
-                     title=f"Predicción vs Escenarios — resaltado Escenario {best} ({best_year})")
-        st.altair_chart(chart,use_container_width=True)
-        st.dataframe(dfc.sort_values("RMSE"),use_container_width=True)
+        chart = alt.Chart(df_pred).mark_line(color="#e67300", strokeWidth=2.5).encode(
+            x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE)), title="Día juliano (1–274)"),
+            y=alt.Y("Emergencia predicha:Q", scale=alt.Scale(domain=[0,1]), title="Emergencia acumulada (0–1)")
+        ).properties(height=420, title=f"Predicción (C{k_hat} • conf {proba.max():.2f} • shift {shift:+.1f}d • scale {scale:.3f})")
+        st.altair_chart(chart, use_container_width=True)
 
-        # --- PANEL DIAGNÓSTICO ---
-        st.subheader("📊 Panel diagnóstico — Diferencia diaria y acumulada")
-        diff = mix - protos[best]
-        df_diag = pd.DataFrame({
+        st.markdown("**Probabilidades por patrón:**")
+        st.dataframe(df_proba, use_container_width=True)
+
+        rel7 = emerg_rel_7d_from_acum(mix)
+        out = pd.DataFrame({"Día": dias, "Emergencia_predicha": mix, "Emergencia_relativa_7d": rel7})
+        st.download_button("⬇️ Descargar curva (CSV)", out.to_csv(index=False).encode("utf-8"),
+                           file_name="curva_predicha_mixture_dtw.csv", mime="text/csv")
+
+# ---------------------------------------------------------------
+# TAB 3 — EVALUACIÓN
+# ---------------------------------------------------------------
+with tabs[2]:
+    st.subheader("📊 Evaluación histórica (holdout por año vs prototipo)")
+    st.markdown("Subí las **curvas históricas** y el **modelo** para evaluar RMSE/MAE por año.")
+    curvas_eval = st.file_uploader("📈 Curvas históricas (XLSX por año)", type=["xlsx","xls"], accept_multiple_files=True, key="eval_cur")
+    meteo_book_eval = st.file_uploader("📘 Meteorología multianual (XLSX)", type=["xlsx","xls"], key="eval_met")
+    modelo_eval = st.file_uploader("📦 Modelo (joblib)", type=["joblib"], key="eval_model")
+    btn_eval = st.button("🔎 Evaluar")
+
+    if btn_eval:
+        if not (curvas_eval and meteo_book_eval and modelo_eval):
+            st.error("Faltan archivos.")
+            st.stop()
+        bundle = joblib.load(modelo_eval)
+        xsc = bundle["xsc"]; feat_names = bundle["feat_names"]; clf = bundle["clf"]
+        protos = bundle["protos"]; regs_shift = bundle["regs_shift"]; regs_scale = bundle["regs_scale"]
+        K = protos.shape[0]
+
+        # meteo
+        sheets = pd.read_excel(meteo_book_eval, sheet_name=None)
+        meteo_dict = {}
+        for name, df in sheets.items():
+            df = standardize_cols(df); df = ensure_jd_1_to_274(df)
+            try:
+                year = int(re.findall(r"\d{4}", str(name))[0])
+            except:
+                year = None
+            if year and all(c in df.columns for c in ["tmin","tmax","prec"]):
+                meteo_dict[year] = df[["jd","tmin","tmax","prec"]].copy()
+
+        # curvas
+        curves_eval = {}
+        for f in curvas_eval:
+            y4 = re.findall(r"(\d{4})", f.name)
+            year = int(y4[0]) if y4 else None
+            if year is None: continue
+            curva = np.maximum.accumulate(curva_desde_xlsx_anual(f))
+            curves_eval[year] = curva
+
+        common = sorted(set(meteo_dict.keys()) & set(curves_eval.keys()))
+        if not common:
+            st.error("⛔ No hay años en común entre meteo y curvas.")
+            st.stop()
+
+        # evaluar
+        dias = np.arange(1, JD_MAX+1)
+        rows=[]
+        for y in common:
+            dfm,_f = build_features_meteo(meteo_dict[y])
+            X = np.array([[_f[k] for k in sorted(feat_names)]], float)
+            Xs = xsc.transform(X)
+            proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
+            shift = float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0.0
+            scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
+            scale = float(np.clip(scale, 0.9, 1.1))
+
+            t = np.arange(1, JD_MAX+1, dtype=float)
+            def warp(proto, sh, sc):
+                tp = (t - sh)/max(sc,1e-6); tp=np.clip(tp,1,JD_MAX)
+                yv = np.interp(tp, np.arange(1,JD_MAX+1,dtype=float), proto)
+                return np.maximum.accumulate(np.clip(yv,0,1))
+            mix = np.zeros(JD_MAX, float)
+            for k in range(K):
+                yk = warp(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
+                mix += float(proba[k]) * yk
+            mix = np.maximum.accumulate(np.clip(mix,0,1))
+
+            y_true = curves_eval[y]
+            rmse = float(np.sqrt(np.mean((y_true - mix)**2)))
+            mae  = float(np.mean(np.abs(y_true - mix)))
+            rows.append((int(y), rmse, mae, k_hat, float(proba.max()), shift, scale))
+
+        dfm = pd.DataFrame(rows, columns=["Año","RMSE","MAE","Cluster","Conf","Shift_d","Scale"])
+        st.dataframe(dfm.sort_values("Año"), use_container_width=True)
+
+        # detalle gráfico
+        yopt = st.selectbox("Ver año:", options=[int(y) for y in common])
+        dfm_, f_ = build_features_meteo(meteo_dict[yopt])
+        X = np.array([[f_[k] for k in sorted(feat_names)]], float); Xs = xsc.transform(X)
+        proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
+        shift = float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0.0
+        scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        scale = float(np.clip(scale, 0.9, 1.1))
+
+        t = np.arange(1, JD_MAX+1, dtype=float)
+        def warp(proto, sh, sc):
+            tp = (t - sh)/max(sc,1e-6); tp=np.clip(tp,1,JD_MAX)
+            yv = np.interp(tp, np.arange(1,JD_MAX+1,dtype=float), proto)
+            return np.maximum.accumulate(np.clip(yv,0,1))
+        mix = np.zeros(JD_MAX, float)
+        for k in range(K):
+            yk = warp(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
+            mix += float(proba[k]) * yk
+        mix = np.maximum.accumulate(np.clip(mix,0,1))
+
+        df_plot = pd.DataFrame({
             "Día": dias,
-            "Δ diaria": diff,
-            "Δ acumulada": np.cumsum(diff)
-        })
-        chart_diag = alt.Chart(df_diag.melt("Día", var_name="Tipo", value_name="Valor")).mark_line().encode(
-            x="Día:Q",
-            y="Valor:Q",
-            color="Tipo:N",
-            tooltip=["Día","Tipo","Valor"]
-        ).properties(height=300,title="Diferencia predicción vs patrón destacado")
-        st.altair_chart(chart_diag,use_container_width=True)
+            "Emergencia real": curves_eval[yopt],
+            "Emergencia predicha": mix
+        }).melt("Día", var_name="Serie", value_name="Valor")
+        chart = alt.Chart(df_plot).mark_line().encode(
+            x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
+            y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
+            color="Serie:N"
+        ).properties(height=420, title=f"Detalle {yopt} (C{k_hat} • conf {proba.max():.2f} • shift {shift:+.1f} • scale {scale:.3f})")
+        st.altair_chart(chart, use_container_width=True)
+
