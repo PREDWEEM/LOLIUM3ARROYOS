@@ -547,3 +547,44 @@ with tabs[2]:
         ).properties(height=420, title=f"Detalle {yopt} (C{k_hat} • conf {proba.max():.2f} • shift {shift:+.1f} • scale {scale:.3f})")
         st.altair_chart(chart, use_container_width=True)
 
+    # ===========================================================
+    # 🔁 Comparar con todos los escenarios posibles (prototipos)
+    # ===========================================================
+    comparaciones = []
+    for k in range(K):
+        proto = protos[k]
+        rmse = float(np.sqrt(np.mean((mix - proto)**2)))
+        mae = float(np.mean(np.abs(mix - proto)))
+        comparaciones.append((k, rmse, mae, float(proba[k])))
+    
+    df_cmp = pd.DataFrame(comparaciones, columns=["Cluster","RMSE_vs_pred","MAE_vs_pred","Probabilidad"])
+    df_cmp["Similitud (%)"] = 100 * (1 - df_cmp["RMSE_vs_pred"] / df_cmp["RMSE_vs_pred"].max())
+    st.markdown("### 🔁 Comparación de la curva predicha vs escenarios históricos")
+    st.dataframe(df_cmp.sort_values("RMSE_vs_pred"), use_container_width=True)
+    
+    # Mostrar todos los escenarios superpuestos
+    dias = np.arange(1, JD_MAX+1)
+    dfp = []
+    for k in range(K):
+        dfp.append(pd.DataFrame({
+            "Día": dias,
+            "Valor": protos[k],
+            "Serie": f"Escenario {k} (RMSE={df_cmp.iloc[k]['RMSE_vs_pred']:.3f})"
+        }))
+    dfp.append(pd.DataFrame({"Día": dias, "Valor": mix, "Serie": "Predicción actual"}))
+    dfp = pd.concat(dfp)
+    
+    chart_cmp = alt.Chart(dfp).mark_line().encode(
+        x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
+        y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
+        color="Serie:N"
+    ).properties(height=440, title="Predicción vs escenarios históricos")
+    st.altair_chart(chart_cmp, use_container_width=True)
+    
+
+
+
+
+
+
+
