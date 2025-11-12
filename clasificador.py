@@ -3,14 +3,14 @@
 # 🌾 PREDWEEM — Curvas de Emergencia (hasta 1 de octubre · JD 274)
 # ===============================================================
 # - Genera curvas históricas desde GitHub RAW
-#   · Detecta frecuencia: diaria → semanal (auto) si paso=1 día
+#   · Detecta frecuencia: diaria → semanal (auto)
 #   · Normaliza y recorta a JD 274 (1/oct)
-# - Entrena MLP multisalida (Tmin, Tmax, Prec → curva 0..1 de 274 días)
-# - Predice curva nueva y muestra:
-#   · Banda histórica min–max y promedio
-#   · Eje Y secundario con emergencia relativa semanal (media móvil 7d)
-#   · Patrón más plausible (según correlación / RMSE)
-# - Descargas: curvas CSV, modelo .joblib, comparación CSV
+# - Entrena MLP multisalida (Tmin, Tmax, Prec → curva 0..1)
+# - Predice curva nueva y:
+#   · Muestra la banda histórica min–max y promedio
+#   · Calcula emergencia relativa semanal
+#   · Identifica el patrón más plausible (correlación / RMSE)
+#   · Grafica la curva predicha junto al patrón más cercano
 # ===============================================================
 
 import streamlit as st
@@ -30,11 +30,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 st.set_page_config(page_title="PREDWEEM — Curvas hasta 1/oct (JD 274)", layout="wide")
 st.title("🌾 PREDWEEM — Generador, Entrenador y Predictor (1-ene → 1-oct, JD 274)")
 
-JD_MAX = 274  # 1 de octubre
+JD_MAX = 274
 XRANGE = (1, JD_MAX)
 
 # =========================
-# 🔧 UTILIDADES GLOBALES
+# 🔧 UTILIDADES
 # =========================
 def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).lower().strip() for c in df.columns]
@@ -91,7 +91,7 @@ def emerg_rel_semanal_desde_acum(y_acum: np.ndarray) -> np.ndarray:
 tabs = st.tabs(["📈 Generar curvas desde GitHub", "🤖 Entrenar modelo", "🔮 Predecir nuevo año"])
 
 # ===============================================================
-# 📈 TAB 1 — GENERADOR DE CURVAS AUTOMÁTICAS (GitHub RAW)
+# 📈 TAB 1
 # ===============================================================
 with tabs[0]:
     st.subheader("📦 Generar curvas automáticamente desde GitHub")
@@ -133,91 +133,78 @@ with tabs[0]:
 
     if btn_gen:
         st.info("Descargando curvas desde GitHub...")
-        urls = listar_archivos_github(base_url)
         curvas = {}
-        for url in urls:
+        for url in listar_archivos_github(base_url):
             anio, curva = descargar_y_procesar(url)
             if anio and curva is not None:
                 curvas[anio] = curva
         if not curvas:
             st.error("No se pudieron generar curvas.")
         else:
-            st.success(f"✅ Se generaron {len(curvas)} curvas (JD 1–{JD_MAX}).")
             st.session_state["curvas_github"] = curvas
+            st.success(f"✅ {len(curvas)} curvas generadas (JD 1–{JD_MAX})")
 
 # ===============================================================
-# 🤖 TAB 2 — ENTRENAMIENTO DEL MODELO
+# 🤖 TAB 2
 # ===============================================================
 with tabs[1]:
     st.subheader("🤖 Entrenar modelo (1-ene → 1-oct, JD 274)")
-    meteo_file = st.file_uploader("📂 Cargar archivo meteorológico (una hoja por año)", type=["xlsx", "xls"])
+    meteo_file = st.file_uploader("📂 Archivo meteorológico (una hoja por año)", type=["xlsx", "xls"])
     seed = st.number_input("Seed aleatoria", 0, 99999, 42)
-    neurons = st.slider("Neuronas por capa", 32, 256, 128, 16)
+    neurons = st.slider("Neuronas", 32, 256, 128, 16)
     max_iter = st.slider("Iteraciones", 300, 5000, 1500, 100)
     btn_fit = st.button("🚀 Entrenar modelo")
-
     curvas_dict = st.session_state.get("curvas_github", {})
-    meteo_dict = {}
 
     if meteo_file:
         sheets = pd.read_excel(meteo_file, sheet_name=None)
-        out = {}
+        meteo_dict = {}
         for name, dfm in sheets.items():
             dfm = standardize_cols(dfm)
             dfm = slice_jan_to_oct1(dfm)
             try:
                 year = int(re.findall(r"\d{4}", name)[0])
             except:
-                year = int(dfm["fecha"].dt.year.mode().iloc[0]) if "fecha" in dfm.columns and dfm["fecha"].notna().any() else None
-            if "jd" not in dfm.columns:
-                dfm["jd"] = np.arange(1, len(dfm) + 1)
-            dfm = dfm.set_index("jd").reindex(range(1, JD_MAX + 1)).interpolate().fillna(0).reset_index()
-            if all(c in dfm.columns for c in ["tmin", "tmax", "prec"]):
-                out[year] = dfm[["jd", "tmin", "tmax", "prec"]]
-        meteo_dict = {k: v for k, v in out.items() if k is not None}
-        st.success(f"✅ Meteorología cargada ({len(meteo_dict)} años).")
+                year = None
+            if year and all(c in dfm.columns for c in ["tmin", "tmax", "prec"]):
+                dfm = dfm.set_index("jd").reindex(range(1, JD_MAX + 1)).interpolate().fillna(0).reset_index()
+                meteo_dict[year] = dfm[["jd", "tmin", "tmax", "prec"]]
+        st.session_state["meteo_dict"] = meteo_dict
+        st.success(f"✅ {len(meteo_dict)} años cargados.")
 
-    if btn_fit and meteo_dict and curvas_dict:
-        X, Y, years = build_xy(meteo_dict, curvas_dict)
+    if btn_fit and "meteo_dict" in st.session_state and curvas_dict:
+        X, Y, years = build_xy(st.session_state["meteo_dict"], curvas_dict)
         for i in range(Y.shape[0]):
             Y[i] = Y[i] / (Y[i][-1] if Y[i][-1] != 0 else 1)
         kf = KFold(n_splits=len(years))
         metrics = []
         xsc, ysc = StandardScaler(), StandardScaler()
-        for train, test in kf.split(X):
-            Xtr, Xte = X[train], X[test]
-            Ytr, Yte = Y[train], Y[test]
-            Xtr_s, Xte_s = xsc.fit_transform(Xtr), xsc.transform(Xte)
-            Ytr_s = ysc.fit_transform(Ytr)
+        for tr, te in kf.split(X):
             mlp = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
-            mlp.fit(Xtr_s, Ytr_s)
-            Yhat = ysc.inverse_transform(mlp.predict(Xte_s))
-            rmse = float(np.sqrt(mean_squared_error(Yte[0], Yhat[0])))
-            mae = float(mean_absolute_error(Yte[0], Yhat[0]))
-            metrics.append((int(years[test][0]), rmse, mae))
-        dfm = pd.DataFrame(metrics, columns=["Año", "RMSE", "MAE"]).sort_values("Año")
-        st.dataframe(dfm, use_container_width=True)
-        xsc.fit(X); ysc.fit(Y)
-        mlp_final = MLPRegressor(hidden_layer_sizes=(neurons,), max_iter=max_iter, random_state=seed)
-        mlp_final.fit(xsc.transform(X), ysc.transform(Y))
-        st.session_state["bundle"] = {"xsc": xsc, "ysc": ysc, "mlp": mlp_final}
-        st.success("✅ Modelo entrenado y guardado en sesión.")
+            mlp.fit(xsc.fit_transform(X[tr]), ysc.fit_transform(Y[tr]))
+            Yhat = ysc.inverse_transform(mlp.predict(xsc.transform(X[te])))
+            rmse = float(np.sqrt(mean_squared_error(Y[te][0], Yhat[0])))
+            mae = float(mean_absolute_error(Y[te][0], Yhat[0]))
+            metrics.append((int(years[te][0]), rmse, mae))
+        st.dataframe(pd.DataFrame(metrics, columns=["Año", "RMSE", "MAE"]).sort_values("Año"))
+        mlp.fit(xsc.fit_transform(X), ysc.fit_transform(Y))
+        st.session_state["bundle"] = {"xsc": xsc, "ysc": ysc, "mlp": mlp}
         buf = io.BytesIO()
         joblib.dump(st.session_state["bundle"], buf)
-        st.download_button("⬇️ Descargar modelo entrenado (.joblib)",
-                           data=buf.getvalue(),
+        st.download_button("⬇️ Descargar modelo (.joblib)", buf.getvalue(),
                            file_name=f"modelo_curva_emergencia_{JD_MAX}.joblib",
                            mime="application/octet-stream")
+        st.success("✅ Modelo entrenado y guardado en sesión.")
 
 # ===============================================================
-# 🔮 TAB 3 — PREDICCIÓN NUEVO AÑO + CLASIFICACIÓN DE PATRÓN
+# 🔮 TAB 3 — PREDICCIÓN Y CLASIFICACIÓN DE PATRÓN
 # ===============================================================
 with tabs[2]:
-    st.subheader("🔮 Predicción (1-ene → 1-oct, JD 274) + Clasificación del patrón más plausible")
+    st.subheader("🔮 Predicción y detección del patrón más plausible")
     curvas_hist = st.session_state.get("curvas_github", {})
-    show_hist_ref = st.checkbox("Mostrar banda histórica", value=True)
     meteo_pred = st.file_uploader("📂 Meteorología nueva (xlsx)", type=["xlsx", "xls"], key="pred")
     modelo_up = st.file_uploader("📦 Modelo entrenado (.joblib)", type=["joblib"])
+    show_hist_ref = st.checkbox("Mostrar banda histórica", value=True)
 
     if st.button("Predecir curva"):
         if not meteo_pred or not modelo_up:
@@ -233,36 +220,42 @@ with tabs[2]:
                 xnew = np.concatenate([df["tmin"], df["tmax"], df["prec"]]).reshape(1, -1)
                 yhat = ysc.inverse_transform(mlp.predict(xsc.transform(xnew)))[0]
                 yhat = np.maximum.accumulate(yhat)
-                yhat = yhat / (yhat[-1] if yhat[-1] != 0 else 1.0)
-                yhat = np.clip(yhat, 0, 1)
+                yhat = yhat / yhat[-1] if yhat[-1] != 0 else yhat
                 dias = np.arange(1, JD_MAX + 1)
 
-                # Emergencia relativa semanal
-                rel = emerg_rel_semanal_desde_acum(yhat)
-                df_rel = pd.DataFrame({"Día": dias, "Emergencia relativa semanal": rel})
-
-                # Mostrar patrón más plausible
+                # --- Clasificación de patrón ---
                 if curvas_hist:
                     H = np.vstack([v[:JD_MAX] for v in curvas_hist.values()])
                     anios = np.array(list(curvas_hist.keys()))
                     corrs = [np.corrcoef(yhat, h)[0, 1] for h in H]
-                    rmses = [np.sqrt(np.mean((yhat - h) ** 2)) for h in H]
-                    idx_best_corr = int(np.argmax(corrs))
-                    idx_best_rmse = int(np.argmin(rmses))
-                    mejor_corr = anios[idx_best_corr]
-                    mejor_rmse = anios[idx_best_rmse]
-                    st.markdown("### 🧩 Clasificación del patrón más plausible")
-                    st.markdown(f"""
-                    - **Mayor correlación:** {mejor_corr} (r = {corrs[idx_best_corr]:.3f})  
-                    - **Menor RMSE:** {mejor_rmse} (RMSE = {rmses[idx_best_rmse]:.3f})
-                    """)
+                    rmses = [np.sqrt(np.mean((yhat - h)**2)) for h in H]
+                    best_idx = int(np.argmax(corrs))
+                    mejor_anio = anios[best_idx]
+                    rmax, rmse_best = corrs[best_idx], rmses[best_idx]
+
                     patrones = {2008: "P1", 2009: "P1b", 2010: "P2", 2011: "P3",
                                 2012: "P1", 2013: "P2", 2014: "P3", 2015: "P1b",
                                 2023: "P2", 2024: "P3", 2025: "P1"}
-                    if mejor_corr in patrones:
-                        st.success(f"🌾 **Patrón más plausible:** {patrones[mejor_corr]} ({mejor_corr})")
-                    else:
-                        st.info(f"🌾 Patrón más plausible: año {mejor_corr} (sin etiqueta)")
+
+                    st.markdown("### 🧩 Clasificación del patrón más plausible")
+                    st.write(f"**Año más similar:** {mejor_anio} (r = {rmax:.3f}, RMSE = {rmse_best:.3f})")
+                    if mejor_anio in patrones:
+                        st.success(f"🌾 Patrón más plausible: **{patrones[mejor_anio]}** ({mejor_anio})")
+
+                    # --- Gráfico comparativo ---
+                    df_comp = pd.DataFrame({
+                        "Día": dias,
+                        "Predicha": yhat,
+                        "Histórica más similar": curvas_hist[mejor_anio][:JD_MAX]
+                    }).melt("Día", var_name="Serie", value_name="Emergencia")
+
+                    chart = alt.Chart(df_comp).mark_line().encode(
+                        x=alt.X("Día:Q", title="Día juliano (1–274)"),
+                        y=alt.Y("Emergencia:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
+                        color="Serie:N"
+                    ).properties(height=460, title=f"Curva predicha vs patrón {patrones.get(mejor_anio, mejor_anio)}")
+                    st.altair_chart(chart, use_container_width=True)
 
             except Exception as e:
                 st.error(f"Error en la predicción: {e}")
+
