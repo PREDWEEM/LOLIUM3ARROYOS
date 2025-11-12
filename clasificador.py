@@ -350,7 +350,7 @@ with tabs[0]:
     meteo_book = st.file_uploader("📘 Meteorología multianual (una hoja por año)", type=["xlsx","xls"])
     curvas_files = st.file_uploader("📈 Curvas históricas (XLSX por año, acumulada o semanal)", type=["xlsx","xls"], accept_multiple_files=True)
 
-    K = st.slider("Número de prototipos/patrones (K)", 2, 6, 4, 1)
+    K = st.slider("Número de prototipos/patrones (K)", 2, 10, 4, 1)
     seed = st.number_input("Semilla", 0, 99999, 42)
     btn_train = st.button("🚀 Entrenar")
 
