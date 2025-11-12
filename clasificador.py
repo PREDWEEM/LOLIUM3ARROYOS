@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM — Mixture-of-Prototypes (DTW + Monotone)
-# - Aprende K prototipos (k-medoids con DTW, sin libs extra)
-# - Clasifica patrón desde meteo (GradientBoostingClassifier)
-# - Curva predicha = mezcla convexa de prototipos + pequeño warp
-# - Garantiza monotonía (acumulado de incrementos >= 0)
-# - Robusto a NaN/rangos vacíos en meteorología
+# 🌾 PREDWEEM v5.1 — Mixture-of-Prototypes (DTW + Monotone)
+# - K prototipos (k-medoids con DTW, sin libs extra)
+# - Clasificador meteo→patrón (GradientBoostingClassifier)
+# - Curva predicha = mezcla convexa de prototipos + warp (shift/scale)
+# - Monotonía garantizada (acumulado de incrementos ≥ 0)
+# - Identifica años por patrón (cluster_years)
+# - Panel de similitud climática (tabla + radar Plotly)
 # - Rango JD 1..274 (1-ene → 1-oct)
 # ===============================================================
 
@@ -13,13 +14,14 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
+import plotly.graph_objects as go
+import plotly.express as px
 import re, io, joblib
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-st.set_page_config(page_title="PREDWEEM — Mixture-of-Prototypes (DTW)", layout="wide")
-st.title("🌾 PREDWEEM — Mixture-of-Prototypes (DTW + Monotone) • JD 1..274")
+st.set_page_config(page_title="PREDWEEM v5.1 — Mixture-of-Prototypes (DTW)", layout="wide")
+st.title("🌾 PREDWEEM v5.1 — DTW + Monotone + Similitud Climática + Años por Patrón")
 
 JD_MAX = 274
 XRANGE = (1, JD_MAX)
@@ -57,7 +59,7 @@ def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["tmin","tmax","prec","jd"]:
         if c in df.columns and isinstance(df[c], pd.Series):
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    # Autodetección mínima si faltan columnas claves
+    # Autodetección mínima si faltan columnas clave
     if "tmin" not in df.columns:
         for c in df.columns:
             s = df[c]
@@ -140,6 +142,11 @@ def emerg_rel_7d_from_acum(y_acum: np.ndarray) -> np.ndarray:
 # ===============================================================
 # FEATURES METEOROLÓGICAS (ROBUSTO)
 # ===============================================================
+FEATURE_ORDER = [
+    "gdd5_FM","gdd3_FM","pp_FM","ev10_FM","ev20_FM",
+    "dry_run_FM","wet_run_FM","tmed14_May","tmed28_May","gdd5_120","pp_120"
+]
+
 def build_features_meteo(dfm: pd.DataFrame):
     dfm = standardize_cols(dfm)
     dfm = ensure_jd_1_to_274(dfm)
@@ -178,7 +185,6 @@ def build_features_meteo(dfm: pd.DataFrame):
     f["dry_run_FM"]= int(longest_run(dry))
     f["wet_run_FM"]= int(longest_run(wet))
 
-    # Móviles en torno a 1 de mayo (JD ~151)
     def ma(x, w):
         k = np.ones(w) / w
         return np.convolve(x, k, "same")
@@ -190,6 +196,8 @@ def build_features_meteo(dfm: pd.DataFrame):
     f["gdd5_120"] = float(gdd5[idx_120])
     f["pp_120"]   = float(np.nansum(prec[: idx_120 + 1]))
 
+    # orden consistente
+    f = {k: f[k] for k in FEATURE_ORDER}
     return dfm, f
 
 # ===============================================================
@@ -238,6 +246,90 @@ def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
     assign = np.argmin(D[:, medoid_idx], axis=1)
     for i in range(N): clusters[int(assign[i])].append(i)
     return medoid_idx, clusters, D
+
+# ===============================================================
+# BUNDLE HELPERS — warp + mezcla + similitud
+# ===============================================================
+def warp_curve(proto: np.ndarray, shift: float, scale: float) -> np.ndarray:
+    t = np.arange(1, JD_MAX+1, dtype=float)
+    tp = (t - shift) / max(scale, 1e-6)
+    tp = np.clip(tp, 1, JD_MAX)
+    yv = np.interp(tp, np.arange(1, JD_MAX+1, dtype=float), proto)
+    return np.maximum.accumulate(np.clip(yv, 0, 1))
+
+def mezcla_convexa(protos: np.ndarray, proba: np.ndarray, k_hat: int, shift: float, scale: float) -> np.ndarray:
+    K = protos.shape[0]
+    mix = np.zeros(JD_MAX, float)
+    for k in range(K):
+        yk = warp_curve(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
+        mix += float(proba[k]) * yk
+    return np.maximum.accumulate(np.clip(mix, 0, 1))
+
+def compute_cluster_feature_stats(meteo_dict, common_years, assign_labels, K):
+    """
+    Calcula media y desvío estándar de features por cluster para similitud climática.
+    Devuelve:
+      - cluster_means: dict[k] -> {feature: mean}
+      - cluster_stds:  dict[k] -> {feature: std (>= eps)}
+      - cluster_years: dict[k] -> [years]
+    """
+    feats_by_year = {}
+    for y in common_years:
+        _, f = build_features_meteo(meteo_dict[y])
+        feats_by_year[y] = f
+
+    cluster_years = {k: [] for k in range(K)}
+    for idx, y in enumerate(common_years):
+        cluster_years[int(assign_labels[idx])].append(int(y))
+
+    cluster_means = {}
+    cluster_stds  = {}
+    eps = 1e-6
+    for k in range(K):
+        ys = cluster_years[k]
+        if len(ys)==0:
+            cluster_means[k] = {feat: 0.0 for feat in FEATURE_ORDER}
+            cluster_stds[k]  = {feat: 1.0 for feat in FEATURE_ORDER}
+            continue
+        M = np.array([[feats_by_year[y][feat] for feat in FEATURE_ORDER] for y in ys], float)
+        mu = np.nanmean(M, axis=0)
+        sd = np.nanstd(M, axis=0)
+        sd = np.where(sd<eps, eps, sd)
+        cluster_means[k] = {FEATURE_ORDER[i]: float(mu[i]) for i in range(len(FEATURE_ORDER))}
+        cluster_stds[k]  = {FEATURE_ORDER[i]: float(sd[i]) for i in range(len(FEATURE_ORDER))}
+    return cluster_means, cluster_stds, cluster_years
+
+def feature_distance_normed(f_new: dict, mu: dict, sd: dict) -> (float, dict):
+    """Distancia euclídea en espacio de features normalizados + detalle por variable."""
+    z2_sum = 0.0
+    detail = {}
+    for k in FEATURE_ORDER:
+        z = (f_new[k] - mu[k]) / (sd[k] if sd[k]!=0 else 1.0)
+        detail[k] = float(z)
+        z2_sum += z*z
+    return float(np.sqrt(z2_sum)), detail
+
+def plot_radar_plotly(rows, title="Similitud climática (z-score por variable)"):
+    """
+    rows: list of dicts:
+      {"name": "Nuevo", "values": {feat: z, ...}}
+      {"name": "C0 (años ...)", "values": {feat: 0 para centro}, ...}  // si se desea
+      {"name": "Ck ...", "values": {feat: z vs su media}, ...}
+    """
+    cats = FEATURE_ORDER
+    fig = go.Figure()
+    for r in rows:
+        vals = [r["values"][c] for c in cats]
+        vals += [vals[0]]
+        cats_closed = cats + [cats[0]]
+        fig.add_trace(go.Scatterpolar(r=vals, theta=cats_closed, fill='toself', name=r["name"]))
+    fig.update_layout(
+        title=title,
+        polar=dict(radialaxis=dict(visible=True)),
+        showlegend=True,
+        height=520
+    )
+    return fig
 
 # ===============================================================
 # APP — TABS
@@ -296,10 +388,10 @@ with tabs[0]:
             st.error("⛔ No se detectaron curvas válidas."); st.stop()
 
         # 3) Intersección meteo–curvas
-        common = sorted([y for y in years_list if y in meteo_dict])
-        if len(common) < 3:
+        common_years = sorted([y for y in years_list if y in meteo_dict])
+        if len(common_years) < 3:
             st.error("⛔ Muy pocos años en común (se recomienda ≥ 5)."); st.stop()
-        curves = [curves_list[years_list.index(y)] for y in common]
+        curves = [curves_list[years_list.index(y)] for y in common_years]
 
         # 4) k-medoids (DTW)
         st.info("🧮 Calculando k-medoids (DTW)...")
@@ -307,34 +399,30 @@ with tabs[0]:
         protos = [curves[i] for i in medoid_idx]
 
         # 5) Features desde meteo + etiqueta de cluster por año
-        feat_rows, y_labels = [], []
-        feat_names = None
-        for y in common:
-            dfm, f = build_features_meteo(meteo_dict[y])
-            if feat_names is None: feat_names = sorted(f.keys())
+        feat_rows, feat_names = [], None
+        for y in common_years:
+            _, f = build_features_meteo(meteo_dict[y])
+            if feat_names is None: feat_names = FEATURE_ORDER[:]   # orden consistente
             feat_rows.append([f[k] for k in feat_names])
-        assign = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # índice de cluster 0..K-1
-        y_labels = assign.astype(int)
+        assign = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # índice cluster 0..K-1
 
-        X = np.array(feat_rows, float); y = y_labels
+        # guardamos años por cluster para interpretación
+        cluster_years = {k: [] for k in range(K)}
+        for i, y in enumerate(common_years):
+            cluster_years[int(assign[i])].append(int(y))
+
+        X = np.array(feat_rows, float); y_lbl = assign.astype(int)
         xsc = StandardScaler().fit(X)
         Xs  = xsc.transform(X)
 
         # 6) Clasificador de patrón
         clf = GradientBoostingClassifier(random_state=seed)
-        clf.fit(Xs, y)
+        clf.fit(Xs, y_lbl)
 
         # 7) Warps (shift/scale) por cluster
         regs_shift, regs_scale = {}, {}
-        t = np.arange(1, JD_MAX+1, dtype=float)
-        def warp_curve(proto, shift, scale):
-            tp = (t - shift) / max(scale, 1e-6)
-            tp = np.clip(tp, 1, JD_MAX)
-            yv = np.interp(tp, np.arange(1, JD_MAX+1, dtype=float), proto)
-            return np.maximum.accumulate(np.clip(yv, 0, 1))
-
         for k in range(K):
-            idx = np.where(y==k)[0]
+            idx = np.where(y_lbl==k)[0]
             if len(idx)==0:
                 regs_shift[k] = GradientBoostingRegressor(random_state=seed)
                 regs_scale[k] = GradientBoostingRegressor(random_state=seed)
@@ -354,14 +442,22 @@ with tabs[0]:
             regs_shift[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(shifts))
             regs_scale[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(scales))
 
-        # 8) Guardar bundle
+        # 8) Estadísticos climáticos por cluster (para similitud)
+        cluster_means, cluster_stds, cluster_years = compute_cluster_feature_stats(
+            meteo_dict, common_years, y_lbl, K
+        )
+
+        # 9) Guardar bundle
         bundle = {
             "xsc": xsc,
             "feat_names": feat_names,
             "clf": clf,
             "protos": np.vstack(protos),  # K x 274
             "regs_shift": regs_shift,
-            "regs_scale": regs_scale
+            "regs_scale": regs_scale,
+            "cluster_years": cluster_years,
+            "cluster_means": cluster_means,
+            "cluster_stds": cluster_stds
         }
         st.success(f"✅ Entrenamiento OK. K={K} prototipos.")
         st.session_state["mix_bundle"] = bundle
@@ -371,15 +467,16 @@ with tabs[0]:
         st.download_button(
             "💾 Descargar modelo (joblib)",
             data=buf.getvalue(),
-            file_name=f"predweem_mixture_dtw_K{K}.joblib",
+            file_name=f"predweem_v51_mixture_dtw_K{K}.joblib",
             mime="application/octet-stream"
         )
 
-        # 9) Vista rápida de prototipos
+        # 10) Vista rápida de prototipos
         dias = np.arange(1, JD_MAX+1)
         dfp = []
         for k,proto in enumerate(protos):
-            dfp.append(pd.DataFrame({"Día": dias, "Valor": proto, "Serie": f"Proto {k}"}))
+            years_txt = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
+            dfp.append(pd.DataFrame({"Día": dias, "Valor": proto, "Serie": f"Proto {k} · años: {years_txt}"}))
         dfp = pd.concat(dfp)
         chart = alt.Chart(dfp).mark_line().encode(
             x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
@@ -389,11 +486,11 @@ with tabs[0]:
         st.altair_chart(chart, use_container_width=True)
 
 # ---------------------------------------------------------------
-# TAB 2 — PREDICCIÓN Y TOP-3 PATRONES
+# TAB 2 — PREDICCIÓN + TOP-3 + SIMILITUD CLIMÁTICA
 # ---------------------------------------------------------------
 with tabs[1]:
-    st.subheader("🔮 Identificación de patrones más probables a partir de meteorología nueva")
-    modelo_file = st.file_uploader("📦 Modelo (predweem_mixture_dtw_*.joblib)", type=["joblib"])
+    st.subheader("🔮 Identificación de patrones y similitud climática a partir de meteorología nueva")
+    modelo_file = st.file_uploader("📦 Modelo (predweem_v51_mixture_dtw_*.joblib)", type=["joblib"])
     meteo_file  = st.file_uploader("📘 Meteorología nueva (XLSX)", type=["xlsx","xls"])
     btn_pred = st.button("🚀 Analizar y predecir")
 
@@ -405,19 +502,27 @@ with tabs[1]:
         bundle = joblib.load(modelo_file)
         xsc = bundle["xsc"]; feat_names = bundle["feat_names"]; clf = bundle["clf"]
         protos = bundle["protos"]; regs_shift = bundle["regs_shift"]; regs_scale = bundle["regs_scale"]
+        cluster_years = bundle.get("cluster_years", {})
+        cluster_means = bundle.get("cluster_means", {})
+        cluster_stds  = bundle.get("cluster_stds", {})
         K = protos.shape[0]
 
         # --- Features desde meteo nueva ---
         dfm = pd.read_excel(meteo_file)
-        dfm, f = build_features_meteo(dfm)
-        X  = np.array([[f[k] for k in sorted(feat_names)]], float)
+        dfm, f_new = build_features_meteo(dfm)
+        X  = np.array([[f_new[k] for k in feat_names]], float)  # orden consistente
         Xs = xsc.transform(X)
 
         # --- Probabilidades de cada patrón ---
         proba  = clf.predict_proba(Xs)[0]  # shape (K,)
         top_idx = np.argsort(proba)[::-1]
         top3 = top_idx[:3]
-        df_proba = pd.DataFrame({"Cluster": [f"C{k}" for k in range(K)], "Probabilidad": proba}) \
+        # Tabla probabilidades con años
+        rows = []
+        for k in range(K):
+            years_txt = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
+            rows.append((f"C{k}", float(proba[k]), years_txt))
+        df_proba = pd.DataFrame(rows, columns=["Cluster","Probabilidad","Años (cluster)"]) \
                     .sort_values("Probabilidad", ascending=False).reset_index(drop=True)
         st.markdown("### 🔢 Probabilidades por patrón")
         st.dataframe(df_proba.style.format({"Probabilidad": "{:.3f}"}), use_container_width=True)
@@ -428,40 +533,59 @@ with tabs[1]:
         scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
         scale = float(np.clip(scale, 0.9, 1.1))
 
-        # --- Función de warpeo y mezcla ---
-        t = np.arange(1, JD_MAX + 1, dtype=float)
-        def warp_curve(proto, sh, sc):
-            tp = (t - sh) / max(sc, 1e-6)
-            tp = np.clip(tp, 1, JD_MAX)
-            yv = np.interp(tp, np.arange(1, JD_MAX + 1, dtype=float), proto)
-            return np.maximum.accumulate(np.clip(yv, 0, 1))
-
         # --- Curva predicha (mezcla convexa) ---
-        mix = np.zeros(JD_MAX, float)
-        for k in range(K):
-            yk = warp_curve(protos[k], shift if k == k_hat else 0.0, scale if k == k_hat else 1.0)
-            mix += float(proba[k]) * yk
-        mix = np.maximum.accumulate(np.clip(mix, 0, 1))
+        mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
 
-        # --- Mostrar curvas top-3 ---
+        # --- Mostrar curvas top-3 + predicción ---
         dias = np.arange(1, JD_MAX + 1)
         df_pred = pd.DataFrame({"Día": dias, "Valor": mix, "Serie": "Predicción"})
         df_tops = []
         for k in top3:
-            df_tops.append(pd.DataFrame({"Día": dias, "Valor": protos[k], "Serie": f"Patrón {k}"}))
+            yrs = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
+            df_tops.append(pd.DataFrame({"Día": dias, "Valor": protos[k], "Serie": f"Patrón C{k} (años: {yrs})"}))
         df_all = pd.concat([df_pred] + df_tops, ignore_index=True)
 
-        chart = alt.Chart(df_all).mark_line().encode(
-            x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
-            y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0,1]), title="Emergencia acumulada (0–1)"),
-            color=alt.Color("Serie:N", scale=alt.Scale(scheme="tableau10")),
-            tooltip=["Serie", "Valor"]
-        ).properties(
-            height=420,
-            title=f"Predicción (patrón más probable: C{k_hat} • conf {proba[k_hat]:.2f} • shift {shift:+.1f}d • scale {scale:.3f})"
-        )
-        st.altair_chart(chart, use_container_width=True)
+        col1, col2 = st.columns([1.15, 0.85])
+        with col1:
+            chart = alt.Chart(df_all).mark_line().encode(
+                x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
+                y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0,1]), title="Emergencia acumulada (0–1)"),
+                color=alt.Color("Serie:N", scale=alt.Scale(scheme="tableau10")),
+                tooltip=["Serie", "Valor"]
+            ).properties(
+                height=420,
+                title=f"Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • shift {shift:+.1f}d • scale {scale:.3f})"
+            )
+            st.altair_chart(chart, use_container_width=True)
 
+        # --- Panel de similitud climática (tabla + radar) ---
+        # Distancias normalizadas (euclídea en z-score)
+        dist_rows = []
+        radar_rows = []
+        for k in range(K):
+            mu = cluster_means.get(k, {feat:0.0 for feat in FEATURE_ORDER})
+            sd = cluster_stds.get(k,  {feat:1.0 for feat in FEATURE_ORDER})
+            dist, detail = feature_distance_normed(f_new, mu, sd)
+            yrs = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
+            dist_rows.append((k, f"C{k}", yrs, dist))
+            radar_rows.append({"name": f"C{k}", "values": detail})
+
+        df_sim = pd.DataFrame(dist_rows, columns=["k","Cluster","Años (cluster)","Distancia_z"])
+        df_sim = df_sim.sort_values("Distancia_z").reset_index(drop=True)
+
+        with col2:
+            st.markdown("### 🧭 Similitud climática (z-score)")
+            st.dataframe(df_sim.assign(**{"Distancia_z": df_sim["Distancia_z"].map(lambda x: f"{x:.3f}")}),
+                         use_container_width=True)
+
+            # Radar: incluir "Nuevo" como punto en 0 (comparación semántica: z=0 contra sí mismo).
+            # Para lectura, graficamos z del nuevo vs medias de cluster:
+            #   - Para "Nuevo", z=0 (vector nulo) para todas (centro).
+            radar_input = [{"name": "Nuevo", "values": {feat: 0.0 for feat in FEATURE_ORDER}}] + radar_rows
+            fig_radar = plot_radar_plotly(radar_input, title="Similitud climática — Radar (z-score)")
+            st.plotly_chart(fig_radar, use_container_width=True, theme=None)
+
+        # Descarga predicción
         rel7 = emerg_rel_7d_from_acum(mix)
         out = pd.DataFrame({"Día": dias, "Emergencia_predicha": mix, "Emergencia_relativa_7d": rel7})
         st.download_button(
@@ -520,24 +644,14 @@ with tabs[2]:
         rows=[]
         for y in common:
             dfm,_f = build_features_meteo(meteo_dict[y])
-            X = np.array([[_f[k] for k in sorted(feat_names)]], float)
+            X = np.array([[_f[k] for k in feat_names]], float)
             Xs = xsc.transform(X)
             proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
             shift = float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0.0
             scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
             scale = float(np.clip(scale, 0.9, 1.1))
 
-            t = np.arange(1, JD_MAX+1, dtype=float)
-            def warp(proto, sh, sc):
-                tp = (t - sh)/max(sc,1e-6); tp=np.clip(tp,1,JD_MAX)
-                yv = np.interp(tp, np.arange(1,JD_MAX+1,dtype=float), proto)
-                return np.maximum.accumulate(np.clip(yv,0,1))
-            mix = np.zeros(JD_MAX, float)
-            for k in range(K):
-                yk = warp(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
-                mix += float(proba[k]) * yk
-            mix = np.maximum.accumulate(np.clip(mix,0,1))
-
+            mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
             y_true = curves_eval[y]
             rmse = float(np.sqrt(np.mean((y_true - mix)**2)))
             mae  = float(np.mean(np.abs(y_true - mix)))
@@ -549,23 +663,13 @@ with tabs[2]:
         # detalle gráfico
         yopt = st.selectbox("Ver año:", options=[int(y) for y in common])
         dfm_, f_ = build_features_meteo(meteo_dict[yopt])
-        X = np.array([[f_[k] for k in sorted(feat_names)]], float); Xs = xsc.transform(X)
+        X = np.array([[f_[k] for k in feat_names]], float); Xs = xsc.transform(X)
         proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
         shift = float(regs_shift[k_hat].predict(Xs)[0]) if k_hat in regs_shift else 0.0
         scale = float(regs_scale[k_hat].predict(Xs)[0]) if k_hat in regs_scale else 1.0
         scale = float(np.clip(scale, 0.9, 1.1))
 
-        t = np.arange(1, JD_MAX+1, dtype=float)
-        def warp(proto, sh, sc):
-            tp = (t - sh)/max(sc,1e-6); tp=np.clip(tp,1,JD_MAX)
-            yv = np.interp(tp, np.arange(1,JD_MAX+1,dtype=float), proto)
-            return np.maximum.accumulate(np.clip(yv,0,1))
-        mix = np.zeros(JD_MAX, float)
-        for k in range(K):
-            yk = warp(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
-            mix += float(proba[k]) * yk
-        mix = np.maximum.accumulate(np.clip(mix,0,1))
-
+        mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
         df_plot = pd.DataFrame({
             "Día": dias,
             "Emergencia real": curves_eval[yopt],
