@@ -547,3 +547,62 @@ with tabs[2]:
         ).properties(height=420, title=f"Detalle {yopt} (C{k_hat} • conf {proba.max():.2f} • shift {shift:+.1f} • scale {scale:.3f})")
         st.altair_chart(chart, use_container_width=True)
 
+# =======================
+# 🔍 COMPARACIÓN AUTOMÁTICA CON HISTÓRICOS
+# =======================
+curvas_hist = st.file_uploader(
+    "📈 (Opcional) Subí las curvas históricas reales (XLSX por año)",
+    type=["xlsx", "xls"],
+    accept_multiple_files=True,
+    key="histcmp"
+)
+
+if curvas_hist:
+    st.markdown("### 🔍 Comparación automática entre curva simulada y año más similar")
+
+    # Cargar todas las curvas históricas
+    hist_curvas = {}
+    for f in curvas_hist:
+        y4 = re.findall(r"(\d{4})", f.name)
+        year = int(y4[0]) if y4 else None
+        if year is None:
+            continue
+        curva = np.maximum.accumulate(curva_desde_xlsx_anual(f))
+        if curva.max() > 0:
+            hist_curvas[year] = curva[:JD_MAX]
+
+    if len(hist_curvas) >= 2:
+        best_year = None
+        best_rmse = 1e9
+        for y, curva in hist_curvas.items():
+            rmse = float(np.sqrt(np.mean((curva - mix) ** 2)))
+            if rmse < best_rmse:
+                best_rmse = rmse
+                best_year = y
+
+        if best_year:
+            st.success(f"✅ El patrón más similar es el de **{best_year}** (RMSE={best_rmse:.4f})")
+
+            df_cmp = pd.DataFrame({
+                "Día": dias,
+                "Simulada": mix,
+                f"Histórica {best_year}": hist_curvas[best_year]
+            }).melt("Día", var_name="Serie", value_name="Valor")
+
+            chart_cmp = alt.Chart(df_cmp).mark_line().encode(
+                x=alt.X("Día:Q", title="Día juliano (1–274)", scale=alt.Scale(domain=list(XRANGE))),
+                y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0, 1])),
+                color="Serie:N"
+            ).properties(height=420, title=f"Comparación con año más similar ({best_year})")
+            st.altair_chart(chart_cmp, use_container_width=True)
+
+            # Exportar comparación
+            out_cmp = pd.DataFrame({"Día": dias,
+                                    "Emergencia_predicha": mix,
+                                    f"Emergencia_{best_year}": hist_curvas[best_year]})
+            st.download_button(
+                "⬇️ Descargar comparación (CSV)",
+                out_cmp.to_csv(index=False).encode("utf-8"),
+                file_name=f"comparacion_pred_vs_{best_year}.csv",
+                mime="text/csv"
+            )
