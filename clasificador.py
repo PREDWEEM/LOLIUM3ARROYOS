@@ -164,7 +164,7 @@ with tabs[0]:
     st.header("🧪 Entrenamiento del modelo")
     meteo_book  = st.file_uploader("📘 Meteorología multianual (una hoja por año)", type=["xlsx","xls"])
     curvas_files= st.file_uploader("📈 Curvas históricas (XLSX por año)", type=["xlsx","xls"], accept_multiple_files=True)
-    K           = st.slider("Número de patrones (K)", 2, 6, 4)
+    K           = st.slider("Número de patrones (K)", 2, 12, 4)
     seed        = st.number_input("Semilla", 0, 99999, 42)
     btn_train   = st.button("🚀 Entrenar modelo")
 
