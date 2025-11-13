@@ -8,6 +8,7 @@
 # - Monotonía garantizada (acumulado de incrementos ≥ 0)
 # - Identifica años por patrón (cluster_years)
 # - Gráfico: Predicción + Patrón más probable + Emergencia relativa semanal (eje Y secundario)
+# - Clasificación de patrones basada SOLO en la curva entre JD 30–121
 # - Rango JD 1..274 (1-ene → 1-oct)
 # ===============================================================
 
@@ -185,18 +186,32 @@ def build_features_meteo(dfm: pd.DataFrame):
 
 # ===============================================================
 # DTW + K-MEDOIDS (SIN DEPENDENCIAS EXTERNAS)
+# ====> IMPORTANTE: solo usa la parte de la curva JD 30–121
 # ===============================================================
 def dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
-    n, m = len(a), len(b)
-    D = np.full((n+1, m+1), np.inf, dtype=float); D[0,0] = 0.0
+    """
+    Distancia DTW entre dos curvas, usando únicamente el tramo
+    comprendido entre JD 30 y JD 121 (inclusive).
+    """
+    # Recortar a ventana 30–121 (índices 29..120)
+    a_seg = a[29:121]
+    b_seg = b[29:121]
+
+    n, m = len(a_seg), len(b_seg)
+    D = np.full((n+1, m+1), np.inf, dtype=float)
+    D[0,0] = 0.0
     for i in range(1, n+1):
-        ai = a[i-1]
+        ai = a_seg[i-1]
         for j in range(1, m+1):
-            cost = (ai - b[j-1])**2
+            cost = (ai - b_seg[j-1])**2
             D[i,j] = cost + min(D[i-1,j], D[i,j-1], D[i-1,j-1])
     return float(np.sqrt(D[n,m]))
 
 def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
+    """
+    Aplica k-medoids usando la matriz de distancias DTW calculada
+    sobre el segmento de curvas JD 30–121.
+    """
     rng = np.random.default_rng(seed)
     N = len(curves)
     if K > N: K = N
@@ -310,8 +325,8 @@ with tabs[0]:
             st.error("⛔ Muy pocos años en común (se recomienda ≥ 5)."); st.stop()
         curves = [curves_list[years_list.index(y)] for y in common_years]
 
-        # 4) k-medoids (DTW)
-        st.info("🧮 Calculando k-medoids (DTW)...")
+        # 4) k-medoids (DTW sobre JD 30–121)
+        st.info("🧮 Calculando k-medoids (DTW, JD 30–121)...")
         medoid_idx, clusters, D = k_medoids_dtw(curves, K=K, max_iter=50, seed=seed)
         protos = [curves[i] for i in medoid_idx]
 
@@ -356,7 +371,7 @@ with tabs[0]:
             regs_shift[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(shifts))
             regs_scale[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(scales))
 
-        # 8) Guardar bundle (sin panel de similitud climática)
+        # 8) Guardar bundle
         bundle = {
             "xsc": xsc,
             "feat_names": FEATURE_ORDER[:],
@@ -378,7 +393,7 @@ with tabs[0]:
             mime="application/octet-stream"
         )
 
-        # 9) Vista rápida de prototipos
+        # 9) Vista rápida de prototipos (curvas completas, pero clusters definidos por JD 30–121)
         dias = np.arange(1, JD_MAX+1)
         dfp = []
         for k,proto in enumerate(protos):
@@ -389,8 +404,9 @@ with tabs[0]:
             x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
             y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
             color="Serie:N"
-        ).properties(height=420, title="Prototipos (medoids DTW)")
+        ).properties(height=420, title="Prototipos (medoids DTW, clasificación basada en JD 30–121)")
         st.altair_chart(chart, use_container_width=True)
+
 
 # ---------------------------------------------------------------
 # TAB 2 — PREDICCIÓN (gráfico solicitado)
@@ -424,8 +440,14 @@ with tabs[1]:
         k_hat = int(top_idx[0])
 
         # --- Warp predicho para el patrón más probable ---
-        shift = float(regs_shift.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_shift else 0.0
-        scale = float(regs_scale.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        if k_hat in regs_shift:
+            shift = float(regs_shift[k_hat].predict(Xs)[0])
+        else:
+            shift = 0.0
+        if k_hat in regs_scale:
+            scale = float(regs_scale[k_hat].predict(Xs)[0])
+        else:
+            scale = 1.0
         scale = float(np.clip(scale, 0.9, 1.1))
 
         # --- Curva predicha (mezcla convexa) y patrón más probable ---
@@ -547,8 +569,14 @@ with tabs[2]:
             X = np.array([[_f[k] for k in feat_names]], float)
             Xs = xsc.transform(X)
             proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
-            shift = float(regs_shift.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_shift else 0.0
-            scale = float(regs_scale.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_scale else 1.0
+            if k_hat in regs_shift:
+                shift = float(regs_shift[k_hat].predict(Xs)[0])
+            else:
+                shift = 0.0
+            if k_hat in regs_scale:
+                scale = float(regs_scale[k_hat].predict(Xs)[0])
+            else:
+                scale = 1.0
             scale = float(np.clip(scale, 0.9, 1.1))
 
             mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
@@ -565,8 +593,14 @@ with tabs[2]:
         dfm_, f_ = build_features_meteo(meteo_dict[yopt])
         X = np.array([[f_[k] for k in feat_names]], float); Xs = xsc.transform(X)
         proba = clf.predict_proba(Xs)[0]; k_hat = int(np.argmax(proba))
-        shift = float(regs_shift.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_shift else 0.0
-        scale = float(regs_scale.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        if k_hat in regs_shift:
+            shift = float(regs_shift[k_hat].predict(Xs)[0])
+        else:
+            shift = 0.0
+        if k_hat in regs_scale:
+            scale = float(regs_scale[k_hat].predict(Xs)[0])
+        else:
+            scale = 1.0
         scale = float(np.clip(scale, 0.9, 1.1))
 
         mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
@@ -582,3 +616,20 @@ with tabs[2]:
         ).properties(height=420,
                      title=f"Detalle {yopt} (C{k_hat} • conf {proba.max():.2f} • shift {shift:+.1f} • scale {scale:.3f})")
         st.altair_chart(chart, use_container_width=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
