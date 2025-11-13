@@ -7,8 +7,9 @@
 # - Curva predicha = mezcla convexa de prototipos + warp (shift/scale)
 # - Monotonía garantizada (acumulado de incrementos ≥ 0)
 # - Identifica años por patrón (cluster_years)
-# - Gráfico: Predicción + Patrón más probable + Emergencia relativa semanal (eje Y secundario)
-# - Clasificación de patrones basada SOLO en la curva entre JD 30–121
+# - Clasificación de patrones basada SOLO en la curva entre JD 30–121 (DTW)
+# - Módulo para comparar curva real vs predicha (RMSE/MAE)
+# - Incluye fracción de emergencia acumulada entre JD 1–120
 # - Rango JD 1..274 (1-ene → 1-oct)
 # ===============================================================
 
@@ -21,7 +22,7 @@ from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegress
 from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(page_title="PREDWEEM v5.1 — Mixture-of-Prototypes (DTW)", layout="wide")
-st.title("🌾 PREDWEEM v5.1 — DTW + Monotone + Años por Patrón")
+st.title("🌾 PREDWEEM v5.1 — Mixture-of-Prototypes (DTW + Monotone)")
 
 JD_MAX = 274
 XRANGE = (1, JD_MAX)
@@ -123,6 +124,16 @@ def emerg_rel_7d_from_acum(y_acum: np.ndarray) -> np.ndarray:
     inc = np.diff(np.insert(y_acum, 0, 0.0))
     return np.convolve(inc, np.ones(7)/7, mode="same")
 
+def frac_curva_1_120(y_acum: np.ndarray) -> float:
+    """
+    Fracción de emergencia acumulada entre JD 1 y JD 120.
+    Dado que la curva está normalizada 0–1, es simplemente E(120).
+    """
+    if len(y_acum) == 0:
+        return 0.0
+    idx_120 = min(119, len(y_acum)-1)  # JD120 -> índice 119
+    return float(y_acum[idx_120])
+
 # ===============================================================
 # FEATURES METEOROLÓGICAS (robusto)
 # ===============================================================
@@ -180,7 +191,6 @@ def build_features_meteo(dfm: pd.DataFrame):
     f["gdd5_120"] = float(gdd5[idx_120])
     f["pp_120"]   = float(np.nansum(prec[: idx_120 + 1]))
 
-    # orden consistente
     f = {k: f[k] for k in FEATURE_ORDER}
     return dfm, f
 
@@ -218,7 +228,6 @@ def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
     idx = rng.choice(N, size=K, replace=False)
     medoid_idx = list(idx)
 
-    # Matriz de distancias
     D = np.zeros((N,N), float)
     for i in range(N):
         for j in range(i+1, N):
@@ -242,7 +251,8 @@ def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
 
     clusters = {k: [] for k in range(K)}
     assign = np.argmin(D[:, medoid_idx], axis=1)
-    for i in range(N): clusters[int(assign[i])].append(i)
+    for i in range(N):
+        clusters[int(assign[i])].append(i)
     return medoid_idx, clusters, D
 
 # ===============================================================
@@ -263,24 +273,26 @@ def mezcla_convexa(protos: np.ndarray, proba: np.ndarray, k_hat: int, shift: flo
         mix += float(proba[k]) * yk
     return np.maximum.accumulate(np.clip(mix, 0, 1))
 
+
 # ===============================================================
 # APP — TABS
 # ===============================================================
-tabs = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "🧪 Entrenar prototipos + clasificador",
     "🔮 Identificar patrones y predecir",
-    "📊 Evaluar"
+    "📈 Comparar Real vs Predicción"
 ])
 
 # ---------------------------------------------------------------
 # TAB 1 — ENTRENAMIENTO
 # ---------------------------------------------------------------
-with tabs[0]:
+with tab1:
     st.subheader("🧪 Entrenamiento (k-medoids DTW + mezcla de prototipos)")
     st.markdown("Subí **meteorología multianual** y **curvas históricas** (XLSX por año).")
 
     meteo_book = st.file_uploader("📘 Meteorología multianual (una hoja por año)", type=["xlsx","xls"])
-    curvas_files = st.file_uploader("📈 Curvas históricas (XLSX por año, acumulada o semanal)", type=["xlsx","xls"], accept_multiple_files=True)
+    curvas_files = st.file_uploader("📈 Curvas históricas (XLSX por año, acumulada o semanal)",
+                                    type=["xlsx","xls"], accept_multiple_files=True)
 
     K = st.slider("Número de prototipos/patrones (K)", 2, 10, 10, 1)
     seed = st.number_input("Semilla", 0, 99999, 42)
@@ -288,7 +300,8 @@ with tabs[0]:
 
     if btn_train:
         if not (meteo_book and curvas_files):
-            st.error("Cargá ambos conjuntos: meteo y curvas."); st.stop()
+            st.error("Cargá ambos conjuntos: meteo y curvas.")
+            st.stop()
 
         # 1) Leer meteo por año
         sheets = pd.read_excel(meteo_book, sheet_name=None)
@@ -304,7 +317,8 @@ with tabs[0]:
                 meteo_dict[year] = df[["jd","tmin","tmax","prec"]].copy()
 
         if not meteo_dict:
-            st.error("⛔ No se detectó meteorología válida por año."); st.stop()
+            st.error("⛔ No se detectó meteorología válida por año.")
+            st.stop()
         st.success(f"✅ Meteorología válida: {len(meteo_dict)} años")
 
         # 2) Leer curvas por año
@@ -312,17 +326,21 @@ with tabs[0]:
         for f in curvas_files:
             y4 = re.findall(r"(\d{4})", f.name)
             year = int(y4[0]) if y4 else None
-            if year is None: continue
+            if year is None:
+                continue
             curva = np.maximum.accumulate(curva_desde_xlsx_anual(f))
             if curva.max() > 0:
-                curves_list.append(curva[:JD_MAX]); years_list.append(year)
+                curves_list.append(curva[:JD_MAX])
+                years_list.append(year)
         if not years_list:
-            st.error("⛔ No se detectaron curvas válidas."); st.stop()
+            st.error("⛔ No se detectaron curvas válidas.")
+            st.stop()
 
         # 3) Intersección meteo–curvas
         common_years = sorted([y for y in years_list if y in meteo_dict])
         if len(common_years) < 3:
-            st.error("⛔ Muy pocos años en común (se recomienda ≥ 5)."); st.stop()
+            st.error("⛔ Muy pocos años en común (se recomienda ≥ 5).")
+            st.stop()
         curves = [curves_list[years_list.index(y)] for y in common_years]
 
         # 4) k-medoids (DTW sobre JD 30–121)
@@ -337,12 +355,13 @@ with tabs[0]:
             feat_rows.append([f[k] for k in FEATURE_ORDER])
         assign = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # índice cluster 0..K-1
 
-        # guardamos años por cluster para interpretación
+        # Años por cluster para interpretación
         cluster_years = {k: [] for k in range(K)}
         for i, y in enumerate(common_years):
             cluster_years[int(assign[i])].append(int(y))
 
-        X = np.array(feat_rows, float); y_lbl = assign.astype(int)
+        X = np.array(feat_rows, float)
+        y_lbl = assign.astype(int)
         xsc = StandardScaler().fit(X)
         Xs  = xsc.transform(X)
 
@@ -353,8 +372,8 @@ with tabs[0]:
         # 7) Warps (shift/scale) por cluster
         regs_shift, regs_scale = {}, {}
         for k in range(K):
-            idx = np.where(y_lbl==k)[0]
-            if len(idx)==0:
+            idx = np.where(y_lbl == k)[0]
+            if len(idx) == 0:
                 continue
             proto = protos[k]
             shifts, scales, Xk = [], [], []
@@ -365,8 +384,11 @@ with tabs[0]:
                     for sc in [0.9, 0.95, 1.0, 1.05, 1.1]:
                         cand = warp_curve(proto, sh, sc)
                         rmse = float(np.sqrt(np.mean((cand - curv)**2)))
-                        if rmse < best[2]: best = (float(sh), float(sc), rmse)
-                shifts.append(best[0]); scales.append(best[1]); Xk.append(Xs[ii])
+                        if rmse < best[2]:
+                            best = (float(sh), float(sc), rmse)
+                shifts.append(best[0])
+                scales.append(best[1])
+                Xk.append(Xs[ii])
             Xk = np.vstack(Xk)
             regs_shift[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(shifts))
             regs_scale[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(scales))
@@ -393,25 +415,31 @@ with tabs[0]:
             mime="application/octet-stream"
         )
 
-        # 9) Vista rápida de prototipos (curvas completas, pero clusters definidos por JD 30–121)
+        # 9) Vista rápida de prototipos
         dias = np.arange(1, JD_MAX+1)
         dfp = []
-        for k,proto in enumerate(protos):
+        for k, proto in enumerate(protos):
             years_txt = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
-            dfp.append(pd.DataFrame({"Día": dias, "Valor": proto, "Serie": f"Proto {k} · años: {years_txt}"}))
+            dfp.append(pd.DataFrame({
+                "Día": dias,
+                "Valor": proto,
+                "Serie": f"Proto {k} · años: {years_txt}"
+            }))
         dfp = pd.concat(dfp)
         chart = alt.Chart(dfp).mark_line().encode(
             x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE))),
             y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)", scale=alt.Scale(domain=[0,1])),
             color="Serie:N"
-        ).properties(height=420, title="Prototipos (medoids DTW, clasificación basada en JD 30–121)")
+        ).properties(
+            height=420,
+            title="Prototipos (medoids DTW, clasificación basada en JD 30–121)"
+        )
         st.altair_chart(chart, use_container_width=True)
 
-
 # ---------------------------------------------------------------
-# TAB 2 — PREDICCIÓN (gráfico solicitado)
+# TAB 2 — PREDICCIÓN
 # ---------------------------------------------------------------
-with tabs[1]:
+with tab2:
     st.subheader("🔮 Identificación de patrones y predicción a partir de meteorología nueva")
     modelo_file = st.file_uploader("📦 Modelo (predweem_v51_mixture_dtw_*.joblib)", type=["joblib"])
     meteo_file  = st.file_uploader("📘 Meteorología nueva (XLSX)", type=["xlsx","xls"])
@@ -419,12 +447,17 @@ with tabs[1]:
 
     if btn_pred:
         if not (modelo_file and meteo_file):
-            st.error("Cargá el modelo y la meteo."); st.stop()
+            st.error("Cargá el modelo y la meteo.")
+            st.stop()
 
         # --- Cargar modelo ---
         bundle = joblib.load(modelo_file)
-        xsc = bundle["xsc"]; feat_names = bundle["feat_names"]; clf = bundle["clf"]
-        protos = bundle["protos"]; regs_shift = bundle["regs_shift"]; regs_scale = bundle["regs_scale"]
+        xsc = bundle["xsc"]
+        feat_names = bundle["feat_names"]
+        clf = bundle["clf"]
+        protos = bundle["protos"]
+        regs_shift = bundle["regs_shift"]
+        regs_scale = bundle["regs_scale"]
         cluster_years = bundle.get("cluster_years", {})
         K = protos.shape[0]
 
@@ -457,7 +490,12 @@ with tabs[1]:
         # --- Emergencia relativa semanal (sobre la predicción) ---
         rel7 = emerg_rel_7d_from_acum(mix)
 
-        # --- Gráfico: Predicción + Patrón más probable + Relativa 7d (eje secundario) ---
+        # --- Fracción de la curva entre JD 1–120 (predicha) ---
+        frac120_pred = frac_curva_1_120(mix)
+
+        st.markdown(f"**Fracción acumulada predicha al JD 120:** `{frac120_pred:.3f}`")
+
+        # --- Gráfico: Predicción + Patrón más probable + Relativa 7d ---
         dias = np.arange(1, JD_MAX + 1)
         df_plot = pd.DataFrame({
             "Día": dias,
@@ -479,7 +517,6 @@ with tabs[1]:
             tooltip=["Serie:N", alt.Tooltip("Valor:Q", format=".3f"), "Día:Q"]
         )
 
-        # Área para la relativa 7d con su propia escala (eje secundario)
         max_rel = float(np.nanmax(rel7)) if np.isfinite(np.nanmax(rel7)) else 1.0
         barra_rel = base.mark_area(opacity=0.35).encode(
             y=alt.Y("Emergencia_relativa_7d:Q",
@@ -493,7 +530,7 @@ with tabs[1]:
         )
         st.altair_chart(chart, use_container_width=True)
 
-        # --- Tabla breve de probabilidades por patrón (años del cluster) ---
+        # --- Tabla de probabilidades por patrón (años del cluster) ---
         rows = []
         for k in range(K):
             years_txt = ", ".join(map(str, cluster_years.get(k, []))) if cluster_years.get(k) else "—"
@@ -503,13 +540,15 @@ with tabs[1]:
         st.markdown("### 🔢 Probabilidades por patrón")
         st.dataframe(df_proba.style.format({"Probabilidad": "{:.3f}"}), use_container_width=True)
 
-        # --- Descarga predicción (incluye patrón más probable y relativa 7d) ---
+        # --- Descarga predicción (incluye patrón más probable, relativa 7d y fracción 1–120) ---
         out = pd.DataFrame({
             "Día": dias,
             "Emergencia_predicha": mix,
             "Patrón_mas_probable": proto_hat,
             "Emergencia_relativa_7d": rel7
         })
+        out["Frac_1_120"] = frac120_pred  # mismo valor en todas las filas, para referencia
+
         st.download_button(
             "⬇️ Descargar curvas (CSV)",
             out.to_csv(index=False).encode("utf-8"),
@@ -518,22 +557,19 @@ with tabs[1]:
         )
 
 # ---------------------------------------------------------------
-# TAB 4 — COMPARAR CURVA REAL VS PREDICHA (RMSE)
+# TAB 3 — COMPARAR CURVA REAL VS PREDICHA (RMSE/MAE)
 # ---------------------------------------------------------------
-with st.tabs(["🧪 Entrenar prototipos + clasificador",
-              "🔮 Identificar patrones y predecir",
-              "📊 Evaluar",
-              "📈 Comparar Real vs Predicción"])[3]:
-
+with tab3:
     st.subheader("📈 Comparar curva real vs curva predicha (RMSE/MAE)")
 
     st.markdown("""
     Cargá:
     - Un **modelo entrenado** (.joblib)  
     - La **meteorología del año** que querés predecir  
-    - La **curva real** de ese mismo año (XLSX)
+    - La **curva real** de ese mismo año (XLSX, diaria o semanal)
 
-    El sistema generará la curva predicha y calculará RMSE/MAE.
+    El sistema generará la curva predicha, calculará RMSE/MAE y
+    mostrará la fracción acumulada al JD 120 para ambas curvas.
     """)
 
     modelo_cmp = st.file_uploader("📦 Modelo", type=["joblib"], key="cmp_model")
@@ -544,7 +580,8 @@ with st.tabs(["🧪 Entrenar prototipos + clasificador",
 
     if btn_cmp:
         if not (modelo_cmp and meteo_cmp and curva_real_file):
-            st.error("Falta cargar modelo, meteorología o curva real."); st.stop()
+            st.error("Falta cargar modelo, meteorología o curva real.")
+            st.stop()
 
         # --- Cargar modelo ---
         bundle = joblib.load(modelo_cmp)
@@ -554,7 +591,7 @@ with st.tabs(["🧪 Entrenar prototipos + clasificador",
         protos = bundle["protos"]
         regs_shift = bundle["regs_shift"]
         regs_scale = bundle["regs_scale"]
-
+        cluster_years = bundle.get("cluster_years", {})
         K = protos.shape[0]
 
         # --- Cargar y procesar meteo ---
@@ -568,23 +605,35 @@ with st.tabs(["🧪 Entrenar prototipos + clasificador",
         k_hat = int(np.argmax(proba))
 
         # --- Warps ---
-        shift = float(regs_shift.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_shift else 0.0
-        scale = float(regs_scale.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        if k_hat in regs_shift:
+            shift = float(regs_shift[k_hat].predict(Xs)[0])
+        else:
+            shift = 0.0
+        if k_hat in regs_scale:
+            scale = float(regs_scale[k_hat].predict(Xs)[0])
+        else:
+            scale = 1.0
         scale = float(np.clip(scale, 0.9, 1.1))
 
         # --- Curva predicha ---
         curva_pred = mezcla_convexa(protos, proba, k_hat, shift, scale)
         rel7_pred = emerg_rel_7d_from_acum(curva_pred)
+        frac120_pred = frac_curva_1_120(curva_pred)
 
         # --- Cargar curva real ---
         curva_real = np.maximum.accumulate(curva_desde_xlsx_anual(curva_real_file))[:JD_MAX]
         rel7_real = emerg_rel_7d_from_acum(curva_real)
+        frac120_real = frac_curva_1_120(curva_real)
 
         # --- RMSE & MAE ---
         rmse = float(np.sqrt(np.mean((curva_real - curva_pred)**2)))
         mae  = float(np.mean(np.abs(curva_real - curva_pred)))
 
         st.success(f"✅ RMSE = {rmse:.4f} — MAE = {mae:.4f}")
+        st.markdown(
+            f"- **Fracción real al JD 120:** `{frac120_real:.3f}`\n\n"
+            f"- **Fracción predicha al JD 120:** `{frac120_pred:.3f}`"
+        )
 
         # --- Gráfico comparativo ---
         dias = np.arange(1, JD_MAX+1)
@@ -608,7 +657,7 @@ with st.tabs(["🧪 Entrenar prototipos + clasificador",
             color="Serie:N"
         )
 
-        max_rel = max(rel7_real.max(), rel7_pred.max())
+        max_rel = max(float(rel7_real.max()), float(rel7_pred.max()))
         areas = base.transform_fold(
             ["Relativa real 7d", "Relativa pred 7d"],
             as_=["Serie", "Valor"]
@@ -621,20 +670,24 @@ with st.tabs(["🧪 Entrenar prototipos + clasificador",
 
         chart = alt.layer(lineas, areas).resolve_scale(y='independent').properties(
             height=420,
-            title=f"Comparación Real vs Predicción (C{k_hat} • conf {proba[k_hat]:.2f})"
+            title=f"Comparación Real vs Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • shift {shift:+.1f}d • scale {scale:.3f})"
         )
         st.altair_chart(chart, use_container_width=True)
 
         # --- Exportar ---
         out = df_cmp.copy()
         out["Error_abs"] = np.abs(curva_real - curva_pred)
+        out["Frac_1_120_real"] = frac120_real
+        out["Frac_1_120_pred"] = frac120_pred
+        out["RMSE_global"] = rmse
+        out["MAE_global"] = mae
+
         st.download_button(
             "⬇️ Descargar comparación (CSV)",
             out.to_csv(index=False).encode("utf-8"),
             file_name="comparacion_real_vs_pred.csv",
             mime="text/csv"
         )
-
 
 
 
