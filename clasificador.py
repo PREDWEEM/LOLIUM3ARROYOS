@@ -891,7 +891,7 @@ with tabs[1]:
         "Fecha de inicio de emergencia (JD), si se conoce a campo:",
         min_value=1,
         max_value=300,
-        value=999,
+        value=1,
         help="Si no se conoce, dejar 999 (predicción sólo con meteorología)."
     )
 
@@ -933,7 +933,7 @@ with tabs[1]:
             emb_pred[emb] = float(embed_regs[emb].predict(X_m_s)[0])
 
         # Si el usuario cargó inicio de emergencia, lo imponemos
-        if inicio_manual != 999:
+        if inicio_manual != 1:
             emb_pred["inicio_emergencia"] = int(inicio_manual)
 
         # Vector METEO + EMBEDDINGS
