@@ -3,13 +3,14 @@
 # 🌾 PREDWEEM v5.1 — Mixture-of-Prototypes (DTW + Monotone)
 # ===============================================================
 # - K prototipos (k-medoids con DTW, sin libs extra)
-# - Clasificador meteo→patrón (GradientBoostingClassifier)
+# - Clasificador meteo (+ inicio_emergencia) → patrón (GradientBoostingClassifier)
 # - Curva predicha = mezcla convexa de prototipos + warp (shift/scale)
 # - Monotonía garantizada (acumulado de incrementos ≥ 0)
 # - Identifica años por patrón (cluster_years)
 # - Clasificación de patrones basada SOLO en la curva entre JD 30–121 (DTW)
+# - Variable fenológica adicional: día de inicio de la emergencia (inicio_emergencia)
 # - Módulo para comparar curva real vs predicha (RMSE/MAE)
-# - Incluye fracción de emergencia acumulada entre JD 1–120
+# - Incluye fracción de emergencia acumulada entre JD 1–120 (salida diagnóstica)
 # - Rango JD 1..274 (1-ene → 1-oct)
 # ===============================================================
 
@@ -21,17 +22,23 @@ import re, io, joblib
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 
+# ---------------------------------------------------------------
+# CONFIGURACIÓN GENERAL STREAMLIT
+# ---------------------------------------------------------------
 st.set_page_config(page_title="PREDWEEM v5.1 — Mixture-of-Prototypes (DTW)", layout="wide")
 st.title("🌾 PREDWEEM v5.1 — Mixture-of-Prototypes (DTW + Monotone)")
 
-JD_MAX = 274
-XRANGE = (1, JD_MAX)
+JD_MAX = 274          # Trabajamos hasta el 1 de octubre
+XRANGE = (1, JD_MAX)  # Rango del eje X en gráficos
 
 # ===============================================================
 # UTILIDADES GENERALES
 # ===============================================================
 def _make_unique(names):
-    """Hace únicos los nombres de columna sin usar APIs internas de pandas."""
+    """
+    Hace únicos los nombres de columna sin usar APIs internas de pandas.
+    Si hay columnas repetidas, les agrega .1, .2, etc.
+    """
     seen, out = {}, []
     for n in names:
         if n not in seen:
@@ -43,6 +50,10 @@ def _make_unique(names):
     return out
 
 def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliza nombres de columnas y trata de mapearlos a:
+    - tmin, tmax, prec, jd, fecha
+    """
     df = df.copy()
     df.columns = _make_unique([str(c).lower().strip() for c in df.columns])
     ren = {
@@ -63,10 +74,14 @@ def standardize_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def ensure_jd_1_to_274(df: pd.DataFrame) -> pd.DataFrame:
-    """Rellena/interpola y restringe al marco JD 1..274."""
+    """
+    Asegura que la tabla tenga una columna 'jd' (día juliano) y la
+    reindexa al rango 1..274 con interpolación y relleno.
+    """
     df = df.copy()
     df.columns = _make_unique(df.columns)
     if "jd" not in df.columns:
+        # Si hay fecha, derivar jd; si no, asumir secuencia 1..n
         if "fecha" in df.columns and df["fecha"].notna().any():
             y0 = int(df["fecha"].dt.year.mode().iloc[0])
             df = df[(df["fecha"] >= f"{y0}-01-01") & (df["fecha"] <= f"{y0}-10-01")].copy().sort_values("fecha")
@@ -76,6 +91,7 @@ def ensure_jd_1_to_274(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df["jd"], pd.DataFrame):
         df["jd"] = df["jd"].iloc[:,0]
     df["jd"] = pd.to_numeric(df["jd"], errors="coerce").astype("Int64")
+
     jd_range = np.arange(1, JD_MAX+1)
     df = (df.set_index("jd")
             .reindex(jd_range)
@@ -84,19 +100,24 @@ def ensure_jd_1_to_274(df: pd.DataFrame) -> pd.DataFrame:
             .reset_index())
     return df
 
+# ===============================================================
+# CURVAS DE EMERGENCIA (HISTÓRICA O REAL) DESDE XLSX
+# ===============================================================
 def curva_desde_xlsx_anual(file) -> np.ndarray:
     """
-    Lee XLSX con dos columnas [día/fecha, valor] (diaria o semanal) y devuelve
-    curva acumulada 0..1 (JD 1..274). Si la serie es semanal, suaviza con ventana 7.
+    Lee XLSX con dos columnas [día/fecha, valor] (diaria o semanal) y
+    devuelve curva acumulada 0..1 (JD 1..274). Si la serie es semanal,
+    suaviza con ventana de 7 días.
     """
     df = pd.read_excel(file, header=None)
     if df.shape[1] < 2:
         df = pd.read_excel(file)
+
     col0 = pd.to_numeric(df.iloc[:,0], errors="coerce")
     col1 = pd.to_numeric(df.iloc[:,1], errors="coerce").fillna(0.0)
 
     if col0.isna().mean() > 0.5:
-        # primera columna es fecha
+        # Primera columna es fecha
         fch = pd.to_datetime(df.iloc[:,0], errors="coerce", dayfirst=True)
         jd  = fch.dt.dayofyear
         val = col1
@@ -107,32 +128,56 @@ def curva_desde_xlsx_anual(file) -> np.ndarray:
     jd_clean = jd.dropna().astype(int).sort_values().unique()
     paso = int(np.median(np.diff(jd_clean))) if len(jd_clean)>1 else 7
 
+    # Arreglo diario año completo (365)
     daily = np.zeros(365, dtype=float)
     for d,v in zip(jd,val):
         if pd.notna(d) and 1 <= int(d) <= 365:
             daily[int(d)-1] += float(v)
+    # Si es semanal u otra frecuencia >1, suavizar
     if paso > 1:
         daily = np.convolve(daily, np.ones(7)/7, mode="same")
 
+    # Acumulada y normalización a 0..1
     acum = np.cumsum(daily)
     if np.nanmax(acum) == 0:
         return np.zeros(JD_MAX, dtype=float)
     curva = (acum / np.nanmax(acum))[:JD_MAX]
+    # Asegurar monotonía no decreciente
     return np.maximum.accumulate(np.clip(curva,0,1))
 
 def emerg_rel_7d_from_acum(y_acum: np.ndarray) -> np.ndarray:
+    """
+    Emergencia relativa semanal: deriva la acumulada diaria y aplica
+    promedio móvil de 7 días.
+    """
     inc = np.diff(np.insert(y_acum, 0, 0.0))
     return np.convolve(inc, np.ones(7)/7, mode="same")
 
 def frac_curva_1_120(y_acum: np.ndarray) -> float:
     """
-    Fracción de emergencia acumulada entre JD 1 y JD 120.
+    Fracción de emergencia acumulada al día juliano 120.
     Dado que la curva está normalizada 0–1, es simplemente E(120).
+    (Se usa como salida diagnóstica).
     """
     if len(y_acum) == 0:
         return 0.0
-    idx_120 = min(119, len(y_acum)-1)  # JD120 -> índice 119
+    idx_120 = min(119, len(y_acum)-1)  # JD120 → índice 119
     return float(y_acum[idx_120])
+
+def detectar_inicio_emergencia(curva: np.ndarray) -> int:
+    """
+    Detecta el día juliano de inicio de la emergencia.
+
+    Definición (según tu criterio):
+      ➜ primer día (JD) donde la emergencia acumulada es > 0,
+         contando desde el día juliano 1.
+
+    Si nunca supera 0, devuelve 999 (indicador de 'desconocido').
+    """
+    idx = np.where(curva > 0)[0]
+    if len(idx) == 0:
+        return 999
+    return int(idx[0] + 1)  # índice 0-based → JD (1-based)
 
 # ===============================================================
 # FEATURES METEOROLÓGICAS (robusto)
@@ -143,6 +188,10 @@ FEATURE_ORDER = [
 ]
 
 def _longest_run(binary_vec: np.ndarray) -> int:
+    """
+    Longitud máxima de racha consecutiva de 1s (por ejemplo,
+    días secos o húmedos consecutivos).
+    """
     m = c = 0
     for v in binary_vec:
         c = c + 1 if v == 1 else 0
@@ -150,6 +199,16 @@ def _longest_run(binary_vec: np.ndarray) -> int:
     return int(m)
 
 def build_features_meteo(dfm: pd.DataFrame):
+    """
+    A partir de la serie meteo diaria (tmin, tmax, prec, jd) en 1..274,
+    calcula un conjunto de features agroclimáticos agregados:
+    - GDD base 5 y 3 en Feb–May
+    - Precipitaciones totales, eventos ≥10 mm, ≥20 mm
+    - Racha seca y húmeda más larga
+    - Tmed 14 y 28 días centrada en mayo
+    - GDD5 acumulado al JD 120
+    - Precipitación acumulada al JD 120
+    """
     dfm = standardize_cols(dfm)
     dfm = ensure_jd_1_to_274(dfm)
     tmin = dfm["tmin"].astype(float).to_numpy()
@@ -158,11 +217,13 @@ def build_features_meteo(dfm: pd.DataFrame):
     prec = dfm["prec"].astype(float).to_numpy()
     jd   = dfm["jd"].astype(int).to_numpy()
 
-    mask_FM = (jd >= 32) & (jd <= 151)  # Feb–May aprox
+    # Ventana Feb–May (aprox JD 32–151)
+    mask_FM = (jd >= 32) & (jd <= 151)
     gdd5 = np.cumsum(np.maximum(tmed - 5, 0))
     gdd3 = np.cumsum(np.maximum(tmed - 3, 0))
 
     if not np.any(mask_FM):
+        # Si algo raro, usar todo el rango
         mask_FM = np.ones_like(jd, dtype=bool)
 
     pf = prec[mask_FM]
@@ -180,6 +241,7 @@ def build_features_meteo(dfm: pd.DataFrame):
     f["dry_run_FM"]= _longest_run(dry)
     f["wet_run_FM"]= _longest_run(wet)
 
+    # Tmed suavizada alrededor de mayo (14 y 28 días)
     def ma(x, w):
         k = np.ones(w) / w
         return np.convolve(x, k, "same")
@@ -187,21 +249,25 @@ def build_features_meteo(dfm: pd.DataFrame):
     f["tmed14_May"] = float(ma(tmed, 14)[idx_may])
     f["tmed28_May"] = float(ma(tmed, 28)[idx_may])
 
+    # Estado a JD 120
     idx_120 = min(119, len(tmed) - 1)
     f["gdd5_120"] = float(gdd5[idx_120])
     f["pp_120"]   = float(np.nansum(prec[: idx_120 + 1]))
 
+    # Orden consistente
     f = {k: f[k] for k in FEATURE_ORDER}
     return dfm, f
 
 # ===============================================================
 # DTW + K-MEDOIDS (SIN DEPENDENCIAS EXTERNAS)
-# ====> IMPORTANTE: solo usa la parte de la curva JD 30–121
+# ===> Importante: usa sólo el tramo JD 30–121 para comparar curvas
 # ===============================================================
 def dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
     """
-    Distancia DTW entre dos curvas, usando únicamente el tramo
-    comprendido entre JD 30 y JD 121 (inclusive).
+    Distancia DTW entre dos curvas de emergencia acumulada,
+    usando únicamente el segmento JD 30–121 (inclusive).
+    Esto asegura que la clasificación de patrones se base sólo
+    en la parte temprana de la curva.
     """
     # Recortar a ventana 30–121 (índices 29..120)
     a_seg = a[29:121]
@@ -219,28 +285,36 @@ def dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
 
 def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
     """
-    Aplica k-medoids usando la matriz de distancias DTW calculada
-    sobre el segmento de curvas JD 30–121.
+    Agrupa curvas en K clusters usando k-medoids con distancia DTW
+    basada sólo en JD 30–121. Devuelve:
+    - índices de los medoids (prototipos),
+    - asignación de miembros a clusters,
+    - matriz de distancias DTW.
     """
     rng = np.random.default_rng(seed)
     N = len(curves)
-    if K > N: K = N
+    if K > N:
+        K = N
     idx = rng.choice(N, size=K, replace=False)
     medoid_idx = list(idx)
 
+    # Matriz de distancias (simétrica)
     D = np.zeros((N,N), float)
     for i in range(N):
         for j in range(i+1, N):
             d = dtw_distance(curves[i], curves[j])
             D[i,j] = D[j,i] = d
 
+    # Iterar hasta convergencia de medoids
     for _ in range(max_iter):
         assign = np.argmin(D[:, medoid_idx], axis=1)
         new_medoids = []
         for k in range(K):
-            members = np.where(assign==k)[0]
-            if len(members)==0:
-                new_medoids.append(medoid_idx[k]); continue
+            members = np.where(assign == k)[0]
+            if len(members) == 0:
+                # Si queda vacío, mantener el medoid actual
+                new_medoids.append(medoid_idx[k])
+                continue
             subD = D[np.ix_(members, members)]
             sums = subD.sum(axis=1)
             chosen = members[np.argmin(sums)]
@@ -256,9 +330,14 @@ def k_medoids_dtw(curves: list, K: int, max_iter: int = 50, seed: int = 42):
     return medoid_idx, clusters, D
 
 # ===============================================================
-# BUNDLE HELPERS — warp + mezcla
+# BUNDLE HELPERS — warp + mezcla convexa
 # ===============================================================
 def warp_curve(proto: np.ndarray, shift: float, scale: float) -> np.ndarray:
+    """
+    Aplica un warp simple a la curva prototipo:
+    - shift: desplazamiento horizontal en días
+    - scale: escalado del eje temporal (compresión/estiramiento)
+    """
     t = np.arange(1, JD_MAX+1, dtype=float)
     tp = (t - shift) / max(scale, 1e-6)
     tp = np.clip(tp, 1, JD_MAX)
@@ -266,13 +345,17 @@ def warp_curve(proto: np.ndarray, shift: float, scale: float) -> np.ndarray:
     return np.maximum.accumulate(np.clip(yv, 0, 1))
 
 def mezcla_convexa(protos: np.ndarray, proba: np.ndarray, k_hat: int, shift: float, scale: float) -> np.ndarray:
+    """
+    Construye la curva predicha como mezcla convexa de todos los prototipos,
+    aplicando el warp (shift/scale) sólo al patrón más probable.
+    """
     K = protos.shape[0]
     mix = np.zeros(JD_MAX, float)
     for k in range(K):
-        yk = warp_curve(protos[k], shift if k==k_hat else 0.0, scale if k==k_hat else 1.0)
+        yk = warp_curve(protos[k], shift if k==k_hat else 0.0,
+                        scale if k==k_hat else 1.0)
         mix += float(proba[k]) * yk
     return np.maximum.accumulate(np.clip(mix, 0, 1))
-
 
 # ===============================================================
 # APP — TABS
@@ -288,7 +371,17 @@ tab1, tab2, tab3 = st.tabs([
 # ---------------------------------------------------------------
 with tab1:
     st.subheader("🧪 Entrenamiento (k-medoids DTW + mezcla de prototipos)")
-    st.markdown("Subí **meteorología multianual** y **curvas históricas** (XLSX por año).")
+    st.markdown("""
+    Subí:
+    - **Meteorología multianual** (una hoja por año)
+    - **Curvas históricas de emergencia** (1 archivo XLSX por año)
+
+    El modelo:
+    1. Aprende K prototipos de curva (k-medoids con DTW entre JD 30–121)
+    2. Asigna cada año a un patrón (cluster)
+    3. Construye un clasificador meteo + inicio_emergencia → patrón
+    4. Ajusta warps (shift/scale) por cluster
+    """)
 
     meteo_book = st.file_uploader("📘 Meteorología multianual (una hoja por año)", type=["xlsx","xls"])
     curvas_files = st.file_uploader("📈 Curvas históricas (XLSX por año, acumulada o semanal)",
@@ -323,6 +416,7 @@ with tab1:
 
         # 2) Leer curvas por año
         years_list, curves_list = [], []
+        curves_dict = {}   # para acceso por año
         for f in curvas_files:
             y4 = re.findall(r"(\d{4})", f.name)
             year = int(y4[0]) if y4 else None
@@ -330,8 +424,10 @@ with tab1:
                 continue
             curva = np.maximum.accumulate(curva_desde_xlsx_anual(f))
             if curva.max() > 0:
-                curves_list.append(curva[:JD_MAX])
+                curva = curva[:JD_MAX]
+                curves_list.append(curva)
                 years_list.append(year)
+                curves_dict[year] = curva
         if not years_list:
             st.error("⛔ No se detectaron curvas válidas.")
             st.stop()
@@ -341,18 +437,30 @@ with tab1:
         if len(common_years) < 3:
             st.error("⛔ Muy pocos años en común (se recomienda ≥ 5).")
             st.stop()
-        curves = [curves_list[years_list.index(y)] for y in common_years]
+        curves = [curves_dict[y] for y in common_years]
 
-        # 4) k-medoids (DTW sobre JD 30–121)
+        # 4) Detectar inicio de emergencia por año (desde curva real)
+        inicio_year = {}
+        for y in common_years:
+            curva = curves_dict[y]
+            inicio_year[y] = detectar_inicio_emergencia(curva)
+        st.write("📍 Día de inicio de emergencia por año:", inicio_year)
+
+        # 5) k-medoids (DTW sobre JD 30–121)
         st.info("🧮 Calculando k-medoids (DTW, JD 30–121)...")
         medoid_idx, clusters, D = k_medoids_dtw(curves, K=K, max_iter=50, seed=seed)
         protos = [curves[i] for i in medoid_idx]
 
-        # 5) Features desde meteo + etiqueta de cluster por año
+        # 6) Features desde meteo + inicio_emergencia + etiqueta de cluster por año
         feat_rows = []
+        FEAT_EXT = FEATURE_ORDER + ["inicio_emergencia"]  # orden de features del clasificador
         for y in common_years:
-            _, f = build_features_meteo(meteo_dict[y])
-            feat_rows.append([f[k] for k in FEATURE_ORDER])
+            _, f_meteo = build_features_meteo(meteo_dict[y])
+            # unir meteo + inicio_emergencia
+            f_all = f_meteo.copy()
+            f_all["inicio_emergencia"] = inicio_year[y]
+            feat_rows.append([f_all[k] for k in FEAT_EXT])
+
         assign = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # índice cluster 0..K-1
 
         # Años por cluster para interpretación
@@ -365,11 +473,12 @@ with tab1:
         xsc = StandardScaler().fit(X)
         Xs  = xsc.transform(X)
 
-        # 6) Clasificador de patrón
+        # 7) Clasificador de patrón (meteo + inicio_emergencia → cluster)
         clf = GradientBoostingClassifier(random_state=seed)
         clf.fit(Xs, y_lbl)
+        feat_names_ext = FEAT_EXT[:]   # guardar orden de columnas del clasificador
 
-        # 7) Warps (shift/scale) por cluster
+        # 8) Warps (shift/scale) por cluster
         regs_shift, regs_scale = {}, {}
         for k in range(K):
             idx = np.where(y_lbl == k)[0]
@@ -380,6 +489,7 @@ with tab1:
             for ii in idx:
                 curv = curves[ii]
                 best = (0.0, 1.0, 1e9)
+                # Búsqueda gruesa de shift y scale
                 for sh in range(-20, 21, 5):       # ±20 días
                     for sc in [0.9, 0.95, 1.0, 1.05, 1.1]:
                         cand = warp_curve(proto, sh, sc)
@@ -393,12 +503,12 @@ with tab1:
             regs_shift[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(shifts))
             regs_scale[k] = GradientBoostingRegressor(random_state=seed).fit(Xk, np.array(scales))
 
-        # 8) Guardar bundle
+        # 9) Guardar bundle
         bundle = {
             "xsc": xsc,
-            "feat_names": FEATURE_ORDER[:],
+            "feat_names": feat_names_ext,  # incluye inicio_emergencia
             "clf": clf,
-            "protos": np.vstack(protos),  # K x 274
+            "protos": np.vstack(protos),   # K x 274
             "regs_shift": regs_shift,
             "regs_scale": regs_scale,
             "cluster_years": cluster_years
@@ -415,7 +525,7 @@ with tab1:
             mime="application/octet-stream"
         )
 
-        # 9) Vista rápida de prototipos
+        # 10) Vista rápida de prototipos
         dias = np.arange(1, JD_MAX+1)
         dfp = []
         for k, proto in enumerate(protos):
@@ -441,8 +551,23 @@ with tab1:
 # ---------------------------------------------------------------
 with tab2:
     st.subheader("🔮 Identificación de patrones y predicción a partir de meteorología nueva")
+
+    st.markdown("""
+    Cargá:
+    - Un **modelo entrenado** (.joblib)  
+    - La **meteorología diaria** del año que querés analizar  
+
+    Opcionalmente podés ingresar el **día de inicio de emergencia medido a campo**.
+    Si lo dejás en 0, el modelo usará 999 como valor 'desconocido'.
+    """)
+
     modelo_file = st.file_uploader("📦 Modelo (predweem_v51_mixture_dtw_*.joblib)", type=["joblib"])
     meteo_file  = st.file_uploader("📘 Meteorología nueva (XLSX)", type=["xlsx","xls"])
+    inicio_manual = st.number_input(
+        "📍 Día de inicio de emergencia medido a campo (0 = desconocido)",
+        min_value=0, max_value=JD_MAX, value=0, step=1
+    )
+
     btn_pred = st.button("🚀 Analizar y predecir")
 
     if btn_pred:
@@ -453,7 +578,7 @@ with tab2:
         # --- Cargar modelo ---
         bundle = joblib.load(modelo_file)
         xsc = bundle["xsc"]
-        feat_names = bundle["feat_names"]
+        feat_names = bundle["feat_names"]   # incluye inicio_emergencia
         clf = bundle["clf"]
         protos = bundle["protos"]
         regs_shift = bundle["regs_shift"]
@@ -464,7 +589,17 @@ with tab2:
         # --- Features desde meteo nueva ---
         dfm = pd.read_excel(meteo_file)
         dfm, f_new = build_features_meteo(dfm)
-        X  = np.array([[f_new[k] for k in feat_names]], float)  # orden consistente
+
+        # Construimos diccionario de features extendido (meteo + inicio_emergencia)
+        features_all = f_new.copy()
+        if inicio_manual > 0:
+            features_all["inicio_emergencia"] = float(inicio_manual)
+        else:
+            features_all["inicio_emergencia"] = 999.0  # valor 'desconocido' / neutro
+
+        # Vector X respetando el orden feat_names
+        xrow = [features_all[k] for k in feat_names]
+        X = np.array([xrow], float)
         Xs = xsc.transform(X)
 
         # --- Probabilidades de cada patrón ---
@@ -526,7 +661,10 @@ with tab2:
 
         chart = alt.layer(curva_lineas, barra_rel).resolve_scale(y='independent').properties(
             height=420,
-            title=f"Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • shift {shift:+.1f}d • scale {scale:.3f})"
+            title=(
+                f"Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • "
+                f"shift {shift:+.1f}d • scale {scale:.3f} • inicio_emergencia={features_all['inicio_emergencia']:.0f})"
+            )
         )
         st.altair_chart(chart, use_container_width=True)
 
@@ -547,7 +685,8 @@ with tab2:
             "Patrón_mas_probable": proto_hat,
             "Emergencia_relativa_7d": rel7
         })
-        out["Frac_1_120"] = frac120_pred  # mismo valor en todas las filas, para referencia
+        out["Frac_1_120_pred"] = frac120_pred  # mismo valor en todas las filas, para referencia
+        out["inicio_emergencia_usado"] = features_all["inicio_emergencia"]
 
         st.download_button(
             "⬇️ Descargar curvas (CSV)",
@@ -565,11 +704,15 @@ with tab3:
     st.markdown("""
     Cargá:
     - Un **modelo entrenado** (.joblib)  
-    - La **meteorología del año** que querés predecir  
-    - La **curva real** de ese mismo año (XLSX, diaria o semanal)
+    - La **meteorología del año** que querés evaluar  
+    - La **curva real de emergencia** de ese mismo año (XLSX, diaria o semanal)
 
-    El sistema generará la curva predicha, calculará RMSE/MAE y
-    mostrará la fracción acumulada al JD 120 para ambas curvas.
+    El sistema:
+    1. Calcula **inicio_emergencia real** a partir de la curva
+    2. Usa meteo + inicio_emergencia real → patrón
+    3. Construye la curva predicha
+    4. Calcula **RMSE/MAE**
+    5. Compara fracción al JD 120 entre real y predicha
     """)
 
     modelo_cmp = st.file_uploader("📦 Modelo", type=["joblib"], key="cmp_model")
@@ -586,7 +729,7 @@ with tab3:
         # --- Cargar modelo ---
         bundle = joblib.load(modelo_cmp)
         xsc = bundle["xsc"]
-        feat_names = bundle["feat_names"]
+        feat_names = bundle["feat_names"]   # incluye inicio_emergencia
         clf = bundle["clf"]
         protos = bundle["protos"]
         regs_shift = bundle["regs_shift"]
@@ -594,10 +737,22 @@ with tab3:
         cluster_years = bundle.get("cluster_years", {})
         K = protos.shape[0]
 
+        # --- Cargar curva real ---
+        curva_real = np.maximum.accumulate(curva_desde_xlsx_anual(curva_real_file))[:JD_MAX]
+        rel7_real = emerg_rel_7d_from_acum(curva_real)
+        frac120_real = frac_curva_1_120(curva_real)
+        inicio_real = detectar_inicio_emergencia(curva_real)
+
         # --- Cargar y procesar meteo ---
         dfm = pd.read_excel(meteo_cmp)
         dfm, f_new = build_features_meteo(dfm)
-        X = np.array([[f_new[k] for k in feat_names]], float)
+
+        # Construimos features (meteo + inicio_emergencia real)
+        features_all = f_new.copy()
+        features_all["inicio_emergencia"] = float(inicio_real)
+
+        xrow = [features_all[k] for k in feat_names]
+        X = np.array([xrow], float)
         Xs = xsc.transform(X)
 
         # --- Clasificación ---
@@ -620,11 +775,6 @@ with tab3:
         rel7_pred = emerg_rel_7d_from_acum(curva_pred)
         frac120_pred = frac_curva_1_120(curva_pred)
 
-        # --- Cargar curva real ---
-        curva_real = np.maximum.accumulate(curva_desde_xlsx_anual(curva_real_file))[:JD_MAX]
-        rel7_real = emerg_rel_7d_from_acum(curva_real)
-        frac120_real = frac_curva_1_120(curva_real)
-
         # --- RMSE & MAE ---
         rmse = float(np.sqrt(np.mean((curva_real - curva_pred)**2)))
         mae  = float(np.mean(np.abs(curva_real - curva_pred)))
@@ -632,7 +782,8 @@ with tab3:
         st.success(f"✅ RMSE = {rmse:.4f} — MAE = {mae:.4f}")
         st.markdown(
             f"- **Fracción real al JD 120:** `{frac120_real:.3f}`\n\n"
-            f"- **Fracción predicha al JD 120:** `{frac120_pred:.3f}`"
+            f"- **Fracción predicha al JD 120:** `{frac120_pred:.3f}`\n\n"
+            f"- **inicio_emergencia real usado:** JD `{inicio_real}`"
         )
 
         # --- Gráfico comparativo ---
@@ -670,7 +821,10 @@ with tab3:
 
         chart = alt.layer(lineas, areas).resolve_scale(y='independent').properties(
             height=420,
-            title=f"Comparación Real vs Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • shift {shift:+.1f}d • scale {scale:.3f})"
+            title=(
+                f"Comparación Real vs Predicción (C{k_hat} • conf {proba[k_hat]:.2f} • "
+                f"shift {shift:+.1f}d • scale {scale:.3f})"
+            )
         )
         st.altair_chart(chart, use_container_width=True)
 
@@ -679,6 +833,7 @@ with tab3:
         out["Error_abs"] = np.abs(curva_real - curva_pred)
         out["Frac_1_120_real"] = frac120_real
         out["Frac_1_120_pred"] = frac120_pred
+        out["inicio_emergencia_real"] = inicio_real
         out["RMSE_global"] = rmse
         out["MAE_global"] = mae
 
@@ -688,14 +843,6 @@ with tab3:
             file_name="comparacion_real_vs_pred.csv",
             mime="text/csv"
         )
-
-
-
-
-
-
-
-
 
 
 
