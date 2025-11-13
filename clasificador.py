@@ -1198,7 +1198,280 @@ with tabs[2]:
             mime="text/csv"
         )
 
+# ===============================================================
+# 🔍 MÓDULO DE VALIDACIÓN LEAVE-ONE-OUT (LOOCV)
+# ===============================================================
 
+def predweem_train_single(meteo_dict, curves_dict, K=5, seed=42):
+    """
+    ENTRENAMIENTO COMPLETO PREDWEEM (sin similitud climática)
+    usado dentro del LOOCV.
+    """
+    years = sorted(curves_dict.keys())
+    curves = [curves_dict[y] for y in years]
+
+    # Clustering k-medoids DTW
+    medoid_idx, clusters, D = k_medoids_dtw(curves, K=K, seed=seed)
+    protos = [curves[i] for i in medoid_idx]
+
+    # Features
+    feat_rows = []
+    for y in years:
+        _, f = build_features_meteo(meteo_dict[y])
+        feat_rows.append([f[k] for k in FEATURE_ORDER])
+
+    X = np.array(feat_rows, float)
+    y_lbl = np.argmin(D[:, np.array(medoid_idx)], axis=1)  # cluster real
+    xsc = StandardScaler().fit(X)
+    Xs = xsc.transform(X)
+
+    # Clasificador
+    clf = GradientBoostingClassifier(random_state=seed)
+    clf.fit(Xs, y_lbl)
+
+    # Warping (shift/scale)
+    regs_shift, regs_scale = {}, {}
+    for k in range(K):
+        idx = np.where(y_lbl == k)[0]
+        if len(idx) == 0:
+            continue
+        proto = protos[k]
+        shifts, scales, Xk_rows = [], [], []
+        for ii in idx:
+            curv = curves[ii]
+            best = (0.0, 1.0, 1e9)
+            for sh in range(-20, 21, 5):
+                for sc in [0.9, 0.95, 1.0, 1.05, 1.1]:
+                    cand = warp_curve(proto, sh, sc)
+                    rmse = float(np.sqrt(np.mean((cand - curv)**2)))
+                    if rmse < best[2]:
+                        best = (sh, sc, rmse)
+            shifts.append(best[0])
+            scales.append(best[1])
+            Xk_rows.append(Xs[ii])
+
+        Xk = np.vstack(Xk_rows)
+        regs_shift[k] = GradientBoostingRegressor().fit(Xk, np.array(shifts))
+        regs_scale[k] = GradientBoostingRegressor().fit(Xk, np.array(scales))
+
+    return {
+        "xsc": xsc,
+        "clf": clf,
+        "protos": np.vstack(protos),
+        "regs_shift": regs_shift,
+        "regs_scale": regs_scale,
+        "assign": y_lbl,
+        "years": years
+    }
+
+# ---------------------------------------------------------------
+# LOOCV
+# ---------------------------------------------------------------
+
+def predweem_loocv(meteo_dict, curves_dict, K=5):
+    rows = []
+    all_years = sorted(curves_dict.keys())
+
+    for y_test in all_years:
+        # Conjuntos train y test
+        train_curves = {y: curves_dict[y] for y in all_years if y != y_test}
+        train_meteo  = {y: meteo_dict[y]  for y in all_years if y != y_test}
+
+        # Entrenar con TRAIN
+        model = predweem_train_single(train_meteo, train_curves, K=K)
+
+        # Extraer partes del modelo
+        xsc = model["xsc"]
+        clf = model["clf"]
+        protos = model["protos"]
+        regs_shift = model["regs_shift"]
+        regs_scale = model["regs_scale"]
+
+        # Procesar año de test
+        dfm, f_new = build_features_meteo(meteo_dict[y_test])
+        X  = np.array([[f_new[k] for k in FEATURE_ORDER]], float)
+        Xs = xsc.transform(X)
+
+        # Clasificación
+        proba = clf.predict_proba(Xs)[0]
+        k_hat = int(np.argmax(proba))
+        conf  = proba[k_hat]
+
+        # Warp predicho
+        shift = regs_shift[k_hat].predict(Xs)[0] if k_hat in regs_shift else 0.0
+        scale = regs_scale[k_hat].predict(Xs)[0] if k_hat in regs_scale else 1.0
+        scale = float(np.clip(scale, 0.9, 1.1))
+
+        # Curva predicha
+        mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
+
+        # Curva real
+        y_real = curves_dict[y_test][:len(mix)]
+
+        # Métricas
+        rmse = float(np.sqrt(np.mean((y_real - mix)**2)))
+        mae  = float(np.mean(np.abs(y_real - mix)))
+
+        rows.append((
+            y_test,         # Año de validación
+            k_hat,          # Patrón predicho
+            conf,           # Probabilidad
+            rmse,
+            mae,
+            float(shift),
+            float(scale)
+        ))
+
+    df = pd.DataFrame(rows, columns=[
+        "Año_validado",
+        "Patrón_predicho",
+        "Confianza",
+        "RMSE",
+        "MAE",
+        "Shift",
+        "Scale"
+    ])
+
+    return df
+
+# ===============================================================
+# 🔍 GRÁFICOS PARA VALIDACIÓN LOOCV
+# ===============================================================
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_loocv_results(df_loocv, curves_dict, meteo_dict, K):
+    st.subheader("📊 Resultados LOOCV")
+
+    st.dataframe(df_loocv.style.format({
+        "RMSE": "{:.4f}",
+        "MAE": "{:.4f}",
+        "Confianza": "{:.3f}",
+        "Shift": "{:+.2f}",
+        "Scale": "{:.3f}"
+    }), use_container_width=True)
+
+    # ===========================================================
+    # 📉 Distribución de errores
+    # ===========================================================
+    st.markdown("### 📉 Distribución de errores RMSE y MAE")
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+
+    sns.histplot(df_loocv["RMSE"], bins=10, kde=True, ax=ax[0], color="royalblue")
+    ax[0].set_title("Distribución RMSE")
+    ax[0].set_xlabel("RMSE")
+
+    sns.histplot(df_loocv["MAE"], bins=10, kde=True, ax=ax[1], color="darkorange")
+    ax[1].set_title("Distribución MAE")
+    ax[1].set_xlabel("MAE")
+
+    st.pyplot(fig)
+
+    # ===========================================================
+    # 🎯 RMSE vs Confianza
+    # ===========================================================
+    st.markdown("### 🎯 Relación RMSE vs Confianza de la predicción")
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.scatterplot(
+        data=df_loocv,
+        x="Confianza",
+        y="RMSE",
+        size="MAE",
+        hue="Patrón_predicho",
+        palette="tab10",
+        sizes=(50, 300),
+    )
+    plt.title("RMSE vs Confianza")
+    plt.xlabel("Confianza del patrón predicho")
+    plt.ylabel("RMSE")
+    plt.grid(True, alpha=0.3)
+    st.pyplot(fig)
+
+    # ===========================================================
+    # 🟥 Clasificación correcta vs incorrecta
+    # ===========================================================
+    if "Patrón_real" in df_loocv.columns:
+        df_loocv["Correcto"] = df_loocv["Patrón_real"] == df_loocv["Patrón_predicho"]
+
+    else:
+        # si no tenemos patrón real, estimar usando clustering completo
+        df_loocv["Correcto"] = df_loocv["RMSE"] < df_loocv["RMSE"].median()
+
+    st.markdown("### 🟥 Tasa de acierto del modelo")
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    sns.countplot(
+        data=df_loocv,
+        x="Correcto",
+        palette=["tomato", "seagreen"]
+    )
+    plt.title("Clasificación correcta vs incorrecta")
+    plt.xlabel("¿Correctamente clasificado?")
+    plt.ylabel("Cantidad de años")
+    st.pyplot(fig)
+
+    # ===========================================================
+    # 🔥 Heatmap RMSE por año (similitud real vs predicho)
+    # ===========================================================
+    st.markdown("### 🔥 Matriz de error (RMSE por año)")
+
+    df_r = df_loocv.pivot_table(
+        index="Año_validado",
+        values="RMSE"
+    )
+
+    fig, ax = plt.subplots(figsize=(5, len(df_r) * 0.4 + 2))
+    sns.heatmap(df_r, cmap="viridis", annot=True, fmt=".3f", cbar=True)
+    plt.title("RMSE por año validado")
+    st.pyplot(fig)
+
+    # ===========================================================
+    # 📈 Selección interactiva de un año para ver curva real vs predicha
+    # ===========================================================
+    st.markdown("### 📈 Curva real vs predicha (seleccionar año)")
+
+    year_sel = st.selectbox("Seleccionar año:", df_loocv["Año_validado"].tolist())
+
+    # Buscar fila seleccionada
+    row = df_loocv[df_loocv["Año_validado"] == year_sel].iloc[0]
+
+    # Generar nuevamente la predicción para graficar
+    dfm, f_new = build_features_meteo(meteo_dict[year_sel])
+    X  = np.array([[f_new[k] for k in FEATURE_ORDER]], float)
+
+    # recalcular predicción con el modelo entrenado sin ese año
+    train_curves = {y: curves_dict[y] for y in curves_dict if y != year_sel}
+    train_meteo  = {y: meteo_dict[y] for y in meteo_dict  if y != year_sel}
+
+    model = predweem_train_single(train_meteo, train_curves, K=K)
+
+    xsc = model["xsc"]
+    clf = model["clf"]
+    protos = model["protos"]
+    regs_shift = model["regs_shift"]
+    regs_scale = model["regs_scale"]
+
+    Xs = xsc.transform(X)
+    proba = clf.predict_proba(Xs)[0]
+    k_hat = int(np.argmax(proba))
+
+    shift = regs_shift[k_hat].predict(Xs)[0] if k_hat in regs_shift else 0.0
+    scale = regs_scale[k_hat].predict(Xs)[0]  if k_hat in regs_scale else 1.0
+    scale = float(np.clip(scale, 0.9, 1.1))
+
+    mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
+    y_real = curves_dict[year_sel]
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(y_real, label=f"Real {year_sel}", color="black", linewidth=2)
+    ax.plot(mix, label=f"Predicción C{k_hat}", color="dodgerblue", linestyle="--", linewidth=2)
+    ax.set_ylim(0, 1.02)
+    ax.set_title(f"Curva real vs predicha – Año {year_sel}")
+    ax.legend()
+    st.pyplot(fig)
 
 
 
