@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM–METEO v5.3 — Clasificación del patrón histórico
+# 🌾 PREDWEEM–METEO v5.4
+# Clasificación del patrón histórico usando SOLO meteorología
 # ===============================================================
 
 import streamlit as st
@@ -12,8 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import GradientBoostingClassifier
 from joblib import dump, load
 
-st.set_page_config(page_title="PREDWEEM–METEO v5.3", layout="wide")
-st.title("🌾 PREDWEEM–METEO v5.3 — Clasificación del Patrón Desde Meteorología")
+st.set_page_config(page_title="PREDWEEM–METEO v5.4", layout="wide")
+st.title("🌾 PREDWEEM–METEO v5.4 — Clasificación del Patrón Desde Meteorología")
 
 
 # ===============================================================
@@ -41,28 +42,28 @@ def max_run(vec):
 
 
 # ===============================================================
-# CARGA METEO ROBUSTA
+# CARGA METEO ROBUSTA (AHORA MUCHÍSIMO MÁS PERMISIVA)
 # ===============================================================
 
 def cargar_meteo_xlsx(file):
     book = pd.read_excel(file, sheet_name=None)
     out = {}
-    problemas = []
 
     JD_VARIANTS = ["jd","Julian_days","Julian_day","dia","day","julian","JD","Día","dia juliano"]
 
     for name, df in book.items():
-        try:
-            year = int(re.findall(r"\d{4}", str(name))[0])
-        except:
-            continue
-
         if not isinstance(df, pd.DataFrame):
             continue
 
+        # Intentar detectar año de la pestaña
+        try:
+            year = int(re.findall(r"\d{4}", str(name))[0])
+        except:
+            continue  # saltar pestañas sin año
+
         df.columns = [str(c).strip() for c in df.columns]
 
-        # JD
+        # Buscar JD
         jd_col = None
         for cand in JD_VARIANTS:
             for col in df.columns:
@@ -72,7 +73,7 @@ def cargar_meteo_xlsx(file):
             if jd_col:
                 break
 
-        # Si no hay JD → intentar fecha
+        # Si no existe JD → intentar por fecha
         if jd_col is None:
             fecha_cols = [c for c in df.columns if "fec" in c.lower()]
             if fecha_cols:
@@ -81,17 +82,14 @@ def cargar_meteo_xlsx(file):
                     df["jd"] = fch.dt.dayofyear
                     jd_col = "jd"
                 except:
-                    problemas.append(name)
                     continue
             else:
-                problemas.append(name)
                 continue
 
         df["jd"] = pd.to_numeric(df[jd_col], errors="coerce")
         df = df.dropna(subset=["jd"])
         df = df[(df["jd"] >= 1) & (df["jd"] <= 274)]
         if df.empty:
-            problemas.append(name)
             continue
 
         # Detectar variables
@@ -102,12 +100,11 @@ def cargar_meteo_xlsx(file):
                         return col
             return None
 
-        col_tmin = buscar(["tmin","temperatura minima","min"])
-        col_tmax = buscar(["tmax","temperatura maxima","max"])
-        col_prec = buscar(["prec","pp","lluvia","rain"])
+        col_tmin = buscar(["tmin","temperatura minima","min","t_min"])
+        col_tmax = buscar(["tmax","temperatura maxima","max","t_max"])
+        col_prec = buscar(["prec","pp","lluvia","rain","precipitacion"])
 
         if not (col_tmin and col_tmax and col_prec):
-            problemas.append(name)
             continue
 
         df = df.rename(columns={
@@ -116,12 +113,12 @@ def cargar_meteo_xlsx(file):
             col_prec: "prec"
         })
 
+        # Convertir valores
         for c in ["tmin","tmax","prec"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
         df = df.dropna(subset=["tmin","tmax","prec"])
         if df.empty:
-            problemas.append(name)
             continue
 
         out[year] = df.sort_values("jd").reset_index(drop=True)
@@ -134,12 +131,9 @@ def cargar_meteo_xlsx(file):
 # ===============================================================
 
 def features_meteo(df):
-    tmin = df["tmin"].values
-    tmax = df["tmax"].values
-    prec = df["prec"].values
-    tmin = np.nan_to_num(tmin)
-    tmax = np.nan_to_num(tmax)
-    prec = np.nan_to_num(prec)
+    tmin = np.nan_to_num(df["tmin"].astype(float).values)
+    tmax = np.nan_to_num(df["tmax"].astype(float).values)
+    prec = np.nan_to_num(df["prec"].astype(float).values)
 
     tmed = (tmin + tmax) / 2
     gdd5 = np.cumsum(np.maximum(tmed - 5, 0))
@@ -165,27 +159,26 @@ def features_meteo(df):
 
 def dtw(a, b):
     n, m = len(a), len(b)
-    D = np.full((n+1,m+1), np.inf)
+    D = np.full((n+1, m+1), np.inf)
     D[0,0] = 0
     for i in range(1,n+1):
         for j in range(1,m+1):
-            cost = (a[i-1]-b[j-1])**2
+            cost = (a[i-1] - b[j-1])**2
             D[i,j] = cost + min(D[i-1,j], D[i,j-1], D[i-1,j-1])
     return float(np.sqrt(D[n,m]))
+
 
 def k_medoids(curves, K=4):
     rng = np.random.default_rng(42)
     N = len(curves)
-    med = rng.choice(N, size=min(K,N), replace=False).tolist()
+    med = rng.choice(N, size=min(K, N), replace=False).tolist()
 
-    # matriz distancia
     D = np.zeros((N,N))
     for i in range(N):
         for j in range(i+1,N):
             d = dtw(curves[i], curves[j])
             D[i,j] = D[j,i] = d
 
-    # refinamiento
     for _ in range(40):
         assign = np.argmin(D[:, med], axis=1)
         new = []
@@ -210,7 +203,7 @@ def k_medoids(curves, K=4):
 
 
 # ===============================================================
-# CARGA CURVAS — FIX DEFINITIVO
+# CARGA CURVAS (FIX DEFINITIVO)
 # ===============================================================
 
 def cargar_curvas(files):
@@ -225,13 +218,13 @@ def cargar_curvas(files):
             continue
 
         if df.shape[1] < 2:
-            st.error(f"❌ {f.name} no tiene 2 columnas.")
+            st.error(f"❌ {f.name} no tiene dos columnas.")
             continue
 
         dias = df.iloc[:,0].values
         vals = df.iloc[:,1].values
 
-        diario = np.zeros(365, float)
+        diario = np.zeros(365)
 
         for d, v in zip(dias, vals):
             try:
@@ -244,8 +237,7 @@ def cargar_curvas(files):
 
         acum = np.cumsum(diario)
         maxv = acum.max() if acum.max() > 0 else 1
-        curva = acum / maxv
-        curva = np.maximum.accumulate(curva)
+        curva = np.maximum.accumulate(acum / maxv)
 
         curvas.append(curva)
 
@@ -262,9 +254,7 @@ def cargar_curvas(files):
 def entrenar_modelo(curvas, meteo_dict, años, K):
 
     medoids, clusters, D = k_medoids(curvas, K)
-
-    X = []
-    y = []
+    X, y = [], []
 
     for i, año in enumerate(años):
         if año not in meteo_dict:
@@ -274,8 +264,7 @@ def entrenar_modelo(curvas, meteo_dict, años, K):
         dist = [dtw(curvas[i], curvas[m]) for m in medoids]
         y.append(int(np.argmin(dist)))
 
-    X = np.array(X, float)
-    X = np.nan_to_num(X)
+    X = np.nan_to_num(np.array(X, float))
 
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
@@ -287,18 +276,18 @@ def entrenar_modelo(curvas, meteo_dict, años, K):
 
 
 # ===============================================================
-# STREAMLIT UI — ENTRENAR
+# STREAMLIT — ENTRENAMIENTO UI
 # ===============================================================
 
-st.header("🧪 Entrenamiento")
+st.header("🧪 Entrenamiento del Modelo")
 
-meteo_file = st.file_uploader("📘 Meteorología multianual (XLSX con pestañas)", type=["xlsx"])
+meteo_file = st.file_uploader("📘 Meteorología (XLSX con pestañas)", type=["xlsx"])
 curva_files = st.file_uploader("📈 Curvas históricas", type=["xlsx"], accept_multiple_files=True)
 K = st.slider("Número de patrones (K)", 2, 10, 4)
 
 if st.button("🚀 ENTRENAR"):
     if not (meteo_file and curva_files):
-        st.error("❌ Faltan archivos")
+        st.error("❌ Faltan archivos.")
         st.stop()
 
     meteo_dict = cargar_meteo_xlsx(meteo_file)
@@ -314,18 +303,19 @@ if st.button("🚀 ENTRENAR"):
         "medoids": medoids
     }
 
-    dump(bundle, "modelo_predweem_meteo.joblib")
+    dump(bundle, "modelo_predweem_meteo_v54.joblib")
 
     st.success("Modelo entrenado con éxito ✔")
+
     st.download_button(
         "💾 Descargar modelo",
-        data=open("modelo_predweem_meteo.joblib","rb").read(),
-        file_name="modelo_predweem_meteo.joblib"
+        data=open("modelo_predweem_meteo_v54.joblib","rb").read(),
+        file_name="modelo_predweem_meteo_v54.joblib"
     )
 
 
 # ===============================================================
-# STREAMLIT UI — PREDICCIÓN
+# STREAMLIT — PREDICCIÓN
 # ===============================================================
 
 st.header("🔮 Predicción del Patrón")
@@ -335,7 +325,7 @@ meteo_new = st.file_uploader("🌦️ Meteorología nueva", type=["xlsx"], key="
 
 if st.button("🔍 PREDECIR"):
     if not (modelo_file and meteo_new):
-        st.error("❌ Cargar modelo y meteorología")
+        st.error("❌ Debe cargar modelo y meteorología.")
         st.stop()
 
     bundle = load(modelo_file)
@@ -346,9 +336,17 @@ if st.button("🔍 PREDECIR"):
     medoids = bundle["medoids"]
 
     metneo = cargar_meteo_xlsx(meteo_new)
-    año_new = list(metneo.keys())[0]
 
-    feats = features_meteo(metneo[año_new])
+    # FIX: no permitir lista vacía
+    if not metneo:
+        st.error("❌ No se detectaron pestañas válidas en la meteorología nueva.\n"
+                 "Verifique columnas de JD, TMIN, TMAX y PREC.")
+        st.stop()
+
+    año_new = sorted(metneo.keys())[0]
+    df_new = metneo[año_new]
+
+    feats = features_meteo(df_new)
 
     X = np.array([[feats[c] for c in cols]], float)
     Xs = scaler.transform(X)
@@ -358,16 +356,15 @@ if st.button("🔍 PREDECIR"):
 
     st.success(f"Patrón más probable: **C{pred}** con prob = {proba[pred]:.2f}")
 
+    # Mostrar prototipo
     curva_proto = curvas_hist[medoids[pred]]
     dias = np.arange(1,366)
 
     dfp = pd.DataFrame({"Día": dias, "Valor": curva_proto})
-
     chart = alt.Chart(dfp).mark_line(color="blue").encode(
-        x="Día:Q",
+        x="Día",
         y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0,1]))
     ).properties(title=f"Patrón C{pred} (Medoid)")
 
     st.altair_chart(chart, use_container_width=True)
-
 
