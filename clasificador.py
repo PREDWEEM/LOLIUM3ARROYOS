@@ -994,61 +994,74 @@ with tabs[1]:
         # prototipo sanitizado
         proto_hat = np.nan_to_num(protos[k_hat][:JD_MAX], nan=0.0)
 
-        # -----------------------------------------------------------
-        # 7) Construir DataFrame SEGURO (todas las columnas = 274)
-        # -----------------------------------------------------------
+            # ================= GRÁFICO SEGURO ALTair ======================
+        # Sanitizar y forzar misma longitud
+        n = min(len(dias), len(mix), len(proto_hat), len(rel7))
+        day = np.arange(1, n + 1)
+        
+        pred = np.nan_to_num(mix[:n], nan=0.0)
+        proto = np.nan_to_num(proto_hat[:n], nan=0.0)
+        rel7_safe = np.nan_to_num(rel7[:n], nan=0.0)
+        
         df_plot = pd.DataFrame({
-            "Día": dias,
-            "Predicción": mix,
-            "Patrón_C_hat": proto_hat,
-            "Relativa_7d": rel7
+            "day": day,
+            "pred": pred,
+            "proto": proto,
+            "rel7": rel7_safe
         })
-
-        # verificar formas
-        if not (len(df_plot["Predicción"]) == len(df_plot["Patrón_C_hat"]) == len(df_plot["Relativa_7d"]) == len(df_plot["Día"])):
-            st.error("❌ Error de longitud en columnas. Revisar curvas.")
-            st.write(df_plot.head())
-            st.stop()
-
-        # -----------------------------------------------------------
-        # 8) Gráfico con FIX Altair
-        # -----------------------------------------------------------
+        
+        # Long-form para las líneas (pred vs proto)
+        df_lines = df_plot.melt(
+            id_vars="day",
+            value_vars=["pred", "proto"],
+            var_name="series",
+            value_name="value"
+        )
+        
         st.markdown("### 📈 Curva predicha vs patrón más probable")
-
-        base = alt.Chart(df_plot).encode(
-            x=alt.X("Día:Q", scale=alt.Scale(domain=[1, JD_MAX]))
+        
+        base = alt.Chart(df_plot).properties(height=420)
+        
+        # Líneas de emergencia acumulada
+        chart_lines = alt.Chart(df_lines).mark_line(strokeWidth=2).encode(
+            x=alt.X("day:Q", scale=alt.Scale(domain=[1, n]), title="Día juliano"),
+            y=alt.Y("value:Q",
+                    scale=alt.Scale(domain=[0, 1]),
+                    title="Emergencia acumulada (0–1)"),
+            color=alt.Color(
+                "series:N",
+                title="Serie",
+                scale=alt.Scale(domain=["pred", "proto"],
+                                range=["#1f77b4", "#ff7f0e"]),  # colores estándar
+                legend=alt.Legend(labelExpr="datum.label == 'pred' ? 'Predicción' : 'Patrón'")
+            ),
+            tooltip=[
+                alt.Tooltip("series:N", title="Serie"),
+                alt.Tooltip("value:Q", title="Emergencia", format=".3f"),
+                alt.Tooltip("day:Q", title="Día juliano")
+            ]
         )
-
-        curva_lineas = base.transform_fold(
-            ["Predicción", "Patrón_C_hat"],
-            as_=["Serie", "Valor"]
-        ).mark_line(strokeWidth=2).encode(
-            y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0, 1])),
-            color="Serie:N",
-            tooltip=["Serie", alt.Tooltip("Valor:Q", format=".3f"), "Día"]
-        )
-
-        # eje secundario
-        max_rel = float(np.nanmax(rel7))
-        if not np.isfinite(max_rel):
+        
+        # Área de emergencia relativa (eje secundario)
+        max_rel = float(np.nanmax(rel7_safe))
+        if not np.isfinite(max_rel) or max_rel <= 0:
             max_rel = 1.0
-
-        barra_rel = base.mark_area(opacity=0.35).encode(
-            y=alt.Y(
-                "Relativa_7d:Q",
-                axis=alt.Axis(title="Emergencia relativa semanal"),
-                scale=alt.Scale(domain=[0, max_rel * 1.1])
-            )
+        
+        chart_rel = alt.Chart(df_plot).mark_area(opacity=0.3).encode(
+            x=alt.X("day:Q"),
+            y=alt.Y("rel7:Q",
+                    axis=alt.Axis(title="Emergencia relativa semanal"),
+                    scale=alt.Scale(domain=[0, max_rel * 1.1]))
         )
-
-        chart = alt.layer(curva_lineas, barra_rel).resolve_scale(
+        
+        chart = alt.layer(chart_lines, chart_rel).resolve_scale(
             y="independent"
         ).properties(
-            height=420,
             title=f"Predicción final (C{k_hat} · prob {conf:.2f})"
         )
-
+        
         st.altair_chart(chart, use_container_width=True)
+
 
         # -----------------------------------------------------------
         # 9) Tabla de probabilidades
