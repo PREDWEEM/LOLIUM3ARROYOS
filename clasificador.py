@@ -905,8 +905,8 @@ with tabs[1]:
         "📍 Fecha de inicio de emergencia (JD) medida a campo (opcional):",
         min_value=1,
         max_value=300,
-        value=999,
-        help="Si no se conoce, dejar 999."
+        value=1,
+        help="Si no se conoce, dejar 1."
     )
 
     btn_pred = st.button("🚀 Ejecutar predicción")
