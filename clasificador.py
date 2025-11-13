@@ -870,54 +870,45 @@ with tabs[0]:
         st.altair_chart(chart, use_container_width=True)
 
 # ===============================================================
-# TAB 2 — PREDICCIÓN (meteorología nueva)
+# TAB 2 — PREDICCIÓN (FIX COMPLETO ALTair + Sanitización)
 # ===============================================================
 with tabs[1]:
     st.subheader("🔮 Identificar patrón y predecir curva de emergencia")
 
-    st.markdown("""
-    Subí:
-    - 📦 Modelo entrenado **PREDWEEM v5.3**
-    - 📘 Meteorología nueva (XLSX)
-
-    El modelo:
-    1) Predice EMBEDDINGS (incluye ILN) a partir de METEO.  
-    2) Con METEO+EMB predice el **patrón más probable**.  
-    3) Predice **shift/scale** del prototipo.  
-    4) Genera la curva final como **mezcla convexa** de prototipos.  
-    5) Calcula emergencia relativa semanal (7d).
-    """)
-
     modelo_file = st.file_uploader(
         "📦 Modelo PREDWEEM v5.3 (.joblib)",
         type=["joblib"],
-        key="pred_model"
+        key="pred_model_v53"
     )
 
     meteo_file = st.file_uploader(
         "📘 Meteorología nueva (XLSX)",
-        type=["xlsx", "xls"],
-        key="pred_meteo"
+        type=["xlsx","xls"],
+        key="pred_meteo_v53"
     )
 
-    # Campo opcional (medición a campo)
     inicio_manual = st.number_input(
         "📍 Fecha de inicio de emergencia (JD) medida a campo (opcional):",
         min_value=1,
         max_value=300,
-        value=1,
-        help="Si no se conoce, dejar 1."
+        value=300,  # valor sentinela
+        help="Dejar en 300 si no se conoce la fecha real."
     )
+    usa_inicio_manual = (inicio_manual < 300)
 
-    btn_pred = st.button("🚀 Ejecutar predicción")
+    btn_pred = st.button("🚀 Ejecutar predicción", key="btn_pred_v53")
 
     if btn_pred:
+
+        # -----------------------------------------------------------
+        # 0) Validación inicial
+        # -----------------------------------------------------------
         if not (modelo_file and meteo_file):
             st.error("Cargá el modelo y la meteorología.")
             st.stop()
 
         # -----------------------------------------------------------
-        # 1. CARGAR MODELO
+        # 1) Cargar modelo entrenado v5.3
         # -----------------------------------------------------------
         bundle = joblib.load(modelo_file)
         xsc_reg = bundle["xsc_reg"]
@@ -925,160 +916,176 @@ with tabs[1]:
         reg_embed = bundle["reg_embed"]
         clf = bundle["clf"]
 
-        protos = bundle["protos"]
+        protos = bundle["protos"]               # K x 274
         regs_shift = bundle["regs_shift"]
         regs_scale = bundle["regs_scale"]
 
         meteo_feat_names = bundle["meteo_feat_names"]
         embed_feat_names = bundle["embed_feat_names"]
 
-        dtw_band = bundle["dtw_band"]
-        dtw_w_focus = bundle["dtw_w_focus"]
+        # Asegurar prototipos (sanitización)
+        protos = np.array([np.nan_to_num(p[:JD_MAX], nan=0.0) for p in protos])
 
         K = protos.shape[0]
+        dias = np.arange(1, JD_MAX + 1)
 
         # -----------------------------------------------------------
-        # 2. LEER METEOROLOGÍA NUEVA
+        # 2) Leer meteorología nueva
         # -----------------------------------------------------------
         dfm = pd.read_excel(meteo_file)
         dfm, f_new = build_features_meteo(dfm)
 
-        # convertir features a vector
         X_new = np.array([[f_new[k] for k in meteo_feat_names]], float)
         X_new_reg = xsc_reg.transform(X_new)
 
         # -----------------------------------------------------------
-        # 3. PREDICCIÓN DE EMBEDDINGS (METEO → EMBEDDINGS)
+        # 3) Predecir EMBEDDINGS (METEO → EMBEDDING CURVA)
         # -----------------------------------------------------------
         emb_pred = {}
         for feat in embed_feat_names:
             emb_pred[feat] = float(reg_embed[feat].predict(X_new_reg)[0])
 
-        # Si hay inicio de emergencia manual, lo usamos en lugar del estimado
-        if inicio_manual != 999:
-            if "inicio_emergencia" in emb_pred:
-                emb_pred["inicio_emergencia"] = float(inicio_manual)
+        # Si hay inicio manual → reemplazar
+        if usa_inicio_manual and "inicio_emergencia" in emb_pred:
+            emb_pred["inicio_emergencia"] = float(inicio_manual)
 
-        # Vector de entrada para el clasificador (METEO + EMBEDDINGS)
-        Z_new = np.array([list(f_new.values()) +
-                          [emb_pred[k] for k in embed_feat_names]], float)
+        # vector METEO+EMBEDDINGS
+        Z_new = np.array([
+            list(f_new.values()) +
+            [emb_pred[k] for k in embed_feat_names]
+        ], float)
         Z_new_scaled = xsc_clf.transform(Z_new)
 
         # -----------------------------------------------------------
-        # 4. CLASIFICAR PATRÓN MÁS PROBABLE
+        # 4) Clasificar patrón
         # -----------------------------------------------------------
         proba = clf.predict_proba(Z_new_scaled)[0]
         k_hat = int(np.argmax(proba))
         conf = float(proba[k_hat])
 
-        st.markdown(f"""
-        ### 🎯 Patrón predicho: **C{k_hat}**  
-        Probabilidad: **{conf:.3f}**
-        """)
+        st.markdown(f"### 🎯 Patrón predicho: **C{k_hat}** · Prob = {conf:.3f}")
 
         # -----------------------------------------------------------
-        # 5. PREDICIÓN DE SHIFT / SCALE
+        # 5) Predecir shift/scale
         # -----------------------------------------------------------
         shift = float(regs_shift[k_hat].predict(X_new_reg)[0])
         scale = float(regs_scale[k_hat].predict(X_new_reg)[0])
         scale = float(np.clip(scale, 0.9, 1.1))
 
         st.markdown(f"""
-        **Ajuste temporal (warp):**  
+        **Warp temporal predicho:**  
         - shift = {shift:+.1f} días  
         - scale = {scale:.3f}
         """)
 
         # -----------------------------------------------------------
-        # 6. CURVA PREDICHA (MEZCLA CONVEXA)
+        # 6) Construir curva predicha (mezcla convexa)
         # -----------------------------------------------------------
-        mix = mezcla_convexa(
-            protos,
-            proba,
-            k_hat,
-            shift,
-            scale
-        )
+        mix = mezcla_convexa(protos, proba, k_hat, shift, scale)
 
-        # Emergencia relativa semanal
+        # sanitizar mix
+        mix = np.nan_to_num(mix[:JD_MAX], nan=0.0)
+        mix = np.maximum.accumulate(np.clip(mix, 0, 1))
+
+        # emergencia relativa 7d
         rel7 = emerg_rel_7d_from_acum(mix)
+        rel7 = np.nan_to_num(rel7[:JD_MAX], nan=0.0)
 
-        dias = np.arange(1, JD_MAX + 1)
+        # prototipo sanitizado
+        proto_hat = np.nan_to_num(protos[k_hat][:JD_MAX], nan=0.0)
 
+        # -----------------------------------------------------------
+        # 7) Construir DataFrame SEGURO (todas las columnas = 274)
+        # -----------------------------------------------------------
         df_plot = pd.DataFrame({
             "Día": dias,
             "Predicción": mix,
-            "Patrón C_hat": protos[k_hat],
+            "Patrón_C_hat": proto_hat,
             "Relativa_7d": rel7
         })
 
+        # verificar formas
+        if not (len(df_plot["Predicción"]) == len(df_plot["Patrón_C_hat"]) == len(df_plot["Relativa_7d"]) == len(df_plot["Día"])):
+            st.error("❌ Error de longitud en columnas. Revisar curvas.")
+            st.write(df_plot.head())
+            st.stop()
+
         # -----------------------------------------------------------
-        # 7. GRAFICAR PREDICCIÓN
+        # 8) Gráfico con FIX Altair
         # -----------------------------------------------------------
-        st.markdown("### 📈 Curva predicha + patrón más probable")
+        st.markdown("### 📈 Curva predicha vs patrón más probable")
 
         base = alt.Chart(df_plot).encode(
-            x=alt.X("Día:Q", scale=alt.Scale(domain=list(XRANGE)))
+            x=alt.X("Día:Q", scale=alt.Scale(domain=[1, JD_MAX]))
         )
 
         curva_lineas = base.transform_fold(
-            ["Predicción", "Patrón C_hat"],
+            ["Predicción", "Patrón_C_hat"],
             as_=["Serie", "Valor"]
         ).mark_line(strokeWidth=2).encode(
-            y=alt.Y("Valor:Q",
-                    title="Emergencia acumulada (0–1)",
-                    scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y("Valor:Q", scale=alt.Scale(domain=[0, 1])),
             color="Serie:N",
-            tooltip=["Serie", alt.Tooltip("Valor:Q", format=".3f"), "Día:Q"]
+            tooltip=["Serie", alt.Tooltip("Valor:Q", format=".3f"), "Día"]
         )
 
-        # Eje secundario: emergencia relativa 7d
-        max_rel = float(np.nanmax(rel7)) if np.isfinite(np.nanmax(rel7)) else 1.0
+        # eje secundario
+        max_rel = float(np.nanmax(rel7))
+        if not np.isfinite(max_rel):
+            max_rel = 1.0
 
         barra_rel = base.mark_area(opacity=0.35).encode(
-            y=alt.Y("Relativa_7d:Q",
-                    axis=alt.Axis(title="Emergencia relativa semanal"),
-                    scale=alt.Scale(domain=[0, max_rel * 1.1]))
+            y=alt.Y(
+                "Relativa_7d:Q",
+                axis=alt.Axis(title="Emergencia relativa semanal"),
+                scale=alt.Scale(domain=[0, max_rel * 1.1])
+            )
         )
 
         chart = alt.layer(curva_lineas, barra_rel).resolve_scale(
             y="independent"
         ).properties(
             height=420,
-            title=f"Predicción final (C{k_hat} • conf {conf:.2f})"
+            title=f"Predicción final (C{k_hat} · prob {conf:.2f})"
         )
 
         st.altair_chart(chart, use_container_width=True)
 
         # -----------------------------------------------------------
-        # 8. MOSTRAR TABLA DE PROBABILIDADES
+        # 9) Tabla de probabilidades
         # -----------------------------------------------------------
-        rows = []
-        for k in range(K):
-            rows.append((f"C{k}", float(proba[k])))
-        df_proba = pd.DataFrame(rows, columns=["Cluster", "Probabilidad"]) \
-                    .sort_values("Probabilidad", ascending=False).reset_index(drop=True)
+        df_proba = pd.DataFrame({
+            "Cluster": [f"C{i}" for i in range(K)],
+            "Probabilidad": proba
+        }).sort_values("Probabilidad", ascending=False)
 
-        st.markdown("### 🔢 Probabilidades por patrón")
-        st.dataframe(df_proba.style.format({"Probabilidad": "{:.3f}"}),
-                     use_container_width=True)
+        st.markdown("### 🔢 Probabilidades de cada patrón")
+        st.dataframe(df_proba.style.format({"Probabilidad": "{:.3f}"}))
 
         # -----------------------------------------------------------
-        # 9. DESCARGA CSV
+        # 10) Descargar CSV
         # -----------------------------------------------------------
+        st.session_state["mix_last_pred"] = mix  # importante para TAB 3
+
         df_out = pd.DataFrame({
             "Día": dias,
             "Emergencia_predicha": mix,
-            "Patrón_C_hat": protos[k_hat],
+            "Patrón_C_hat": proto_hat,
             "Relativa_7d": rel7
         })
 
         st.download_button(
             "⬇️ Descargar curva predicha (CSV)",
             df_out.to_csv(index=False).encode("utf-8"),
-            file_name="predweem_v53_prediccion.csv",
+            file_name="predweem_v53_prediccion_fix.csv",
             mime="text/csv"
         )
+
+
+
+
+
+
+
 
 # ===============================================================
 # TAB 3 — COMPARAR CURVA REAL vs CURVA PREDICHA
