@@ -517,6 +517,123 @@ with tabs[1]:
             mime="text/csv"
         )
 
+# ---------------------------------------------------------------
+# TAB 4 — COMPARAR CURVA REAL VS PREDICHA (RMSE)
+# ---------------------------------------------------------------
+with st.tabs(["🧪 Entrenar prototipos + clasificador",
+              "🔮 Identificar patrones y predecir",
+              "📊 Evaluar",
+              "📈 Comparar Real vs Predicción"])[3]:
+
+    st.subheader("📈 Comparar curva real vs curva predicha (RMSE/MAE)")
+
+    st.markdown("""
+    Cargá:
+    - Un **modelo entrenado** (.joblib)  
+    - La **meteorología del año** que querés predecir  
+    - La **curva real** de ese mismo año (XLSX)
+
+    El sistema generará la curva predicha y calculará RMSE/MAE.
+    """)
+
+    modelo_cmp = st.file_uploader("📦 Modelo", type=["joblib"], key="cmp_model")
+    meteo_cmp  = st.file_uploader("📘 Meteorología del año", type=["xlsx","xls"], key="cmp_meteo")
+    curva_real_file = st.file_uploader("📈 Curva real (XLSX)", type=["xlsx","xls"], key="cmp_curva")
+
+    btn_cmp = st.button("🚀 Comparar")
+
+    if btn_cmp:
+        if not (modelo_cmp and meteo_cmp and curva_real_file):
+            st.error("Falta cargar modelo, meteorología o curva real."); st.stop()
+
+        # --- Cargar modelo ---
+        bundle = joblib.load(modelo_cmp)
+        xsc = bundle["xsc"]
+        feat_names = bundle["feat_names"]
+        clf = bundle["clf"]
+        protos = bundle["protos"]
+        regs_shift = bundle["regs_shift"]
+        regs_scale = bundle["regs_scale"]
+
+        K = protos.shape[0]
+
+        # --- Cargar y procesar meteo ---
+        dfm = pd.read_excel(meteo_cmp)
+        dfm, f_new = build_features_meteo(dfm)
+        X = np.array([[f_new[k] for k in feat_names]], float)
+        Xs = xsc.transform(X)
+
+        # --- Clasificación ---
+        proba = clf.predict_proba(Xs)[0]
+        k_hat = int(np.argmax(proba))
+
+        # --- Warps ---
+        shift = float(regs_shift.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_shift else 0.0
+        scale = float(regs_scale.get(k_hat, GradientBoostingRegressor()).predict(Xs)[0]) if k_hat in regs_scale else 1.0
+        scale = float(np.clip(scale, 0.9, 1.1))
+
+        # --- Curva predicha ---
+        curva_pred = mezcla_convexa(protos, proba, k_hat, shift, scale)
+        rel7_pred = emerg_rel_7d_from_acum(curva_pred)
+
+        # --- Cargar curva real ---
+        curva_real = np.maximum.accumulate(curva_desde_xlsx_anual(curva_real_file))[:JD_MAX]
+        rel7_real = emerg_rel_7d_from_acum(curva_real)
+
+        # --- RMSE & MAE ---
+        rmse = float(np.sqrt(np.mean((curva_real - curva_pred)**2)))
+        mae  = float(np.mean(np.abs(curva_real - curva_pred)))
+
+        st.success(f"✅ RMSE = {rmse:.4f} — MAE = {mae:.4f}")
+
+        # --- Gráfico comparativo ---
+        dias = np.arange(1, JD_MAX+1)
+        df_cmp = pd.DataFrame({
+            "Día": dias,
+            "Real": curva_real,
+            "Predicción": curva_pred,
+            "Relativa real 7d": rel7_real,
+            "Relativa pred 7d": rel7_pred
+        })
+
+        base = alt.Chart(df_cmp).encode(
+            x=alt.X("Día:Q", scale=alt.Scale(domain=[1, JD_MAX]))
+        )
+
+        lineas = base.transform_fold(
+            ["Real", "Predicción"], as_=["Serie", "Valor"]
+        ).mark_line(strokeWidth=2).encode(
+            y=alt.Y("Valor:Q", title="Emergencia acumulada (0–1)",
+                    scale=alt.Scale(domain=[0,1])),
+            color="Serie:N"
+        )
+
+        max_rel = max(rel7_real.max(), rel7_pred.max())
+        areas = base.transform_fold(
+            ["Relativa real 7d", "Relativa pred 7d"],
+            as_=["Serie", "Valor"]
+        ).mark_area(opacity=0.35).encode(
+            y=alt.Y("Valor:Q",
+                    axis=alt.Axis(title="Emergencia relativa semanal"),
+                    scale=alt.Scale(domain=[0, max_rel*1.1])),
+            color="Serie:N"
+        )
+
+        chart = alt.layer(lineas, areas).resolve_scale(y='independent').properties(
+            height=420,
+            title=f"Comparación Real vs Predicción (C{k_hat} • conf {proba[k_hat]:.2f})"
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        # --- Exportar ---
+        out = df_cmp.copy()
+        out["Error_abs"] = np.abs(curva_real - curva_pred)
+        st.download_button(
+            "⬇️ Descargar comparación (CSV)",
+            out.to_csv(index=False).encode("utf-8"),
+            file_name="comparacion_real_vs_pred.csv",
+            mime="text/csv"
+        )
 
 
 
