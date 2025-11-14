@@ -413,4 +413,30 @@ st.pyplot(figp)
 # ===============================================================
 # FIN DEL SCRIPT
 # ===============================================================
+# ===============================================================
+# 🔧 GRÁFICOS MOSTRATIVOS — EMERREL cruda vs procesada
+# ===============================================================
+st.subheader("🔍 Comparación EMERREL — Cruda vs Procesada")
 
+fig_er, ax_er = plt.subplots(figsize=(10,4))
+ax_er.plot(df["Julian_days"], emerrel_raw, label="EMERREL cruda (ANN)", color="red", alpha=0.6)
+ax_er.plot(df["Julian_days"], emerrel,     label="EMERREL procesada", color="blue", linewidth=2)
+ax_er.set_xlabel("Día juliano")
+ax_er.set_ylabel("EMERREL (fracción diaria)")
+ax_er.set_title("EMERREL: salida ANN vs post-proceso")
+ax_er.legend()
+st.pyplot(fig_er)
+
+# ===============================================================
+# 🔧 GRÁFICOS MOSTRATIVOS — EMERAC cruda vs procesada
+# ===============================================================
+st.subheader("🔍 Comparación EMERAC — Cruda vs Procesada")
+
+fig_ac, ax_ac = plt.subplots(figsize=(10,4))
+ax_ac.plot(df["Julian_days"], emerac_raw/emerac_raw[-1], label="EMERAC cruda (normalizada)", color="orange", alpha=0.6)
+ax_ac.plot(df["Julian_days"], emerac,                    label="EMERAC procesada", color="green", linewidth=2)
+ax_ac.set_xlabel("Día juliano")
+ax_ac.set_ylabel("EMERAC (0–1)")
+ax_ac.set_title("EMERAC: acumulado ANN vs post-proceso")
+ax_ac.legend()
+st.pyplot(fig_ac)
