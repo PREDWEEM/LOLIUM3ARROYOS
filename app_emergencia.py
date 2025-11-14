@@ -1,19 +1,18 @@
 # ===============================================================
 # 🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido
-# Integración ANN + Modelo de Clusters d25–d95
+# Integración ANN + Clustering d25–d95 (sin Pandas)
 # ===============================================================
 
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import pickle, requests, time, xml.etree.ElementTree as ET
+import pickle, requests, xml.etree.ElementTree as ET
 from pathlib import Path
 
-# ======================
-# CONFIGURACIÓN STREAMLIT
-# ======================
+# ===============================================================
+# 🔧 CONFIG STREAMLIT
+# ===============================================================
 st.set_page_config(
     page_title="PREDWEEM v7 – Emergencia + Patrón",
     layout="wide",
@@ -21,9 +20,9 @@ st.set_page_config(
 
 BASE = Path(__file__).parent if "__file__" in globals() else Path.cwd()
 
-# ======================
-# FUNCIONES SEGURAS
-# ======================
+# ===============================================================
+# 🔧 FUNCIONES SEGURAS
+# ===============================================================
 def safe(fn, msg):
     try:
         return fn()
@@ -31,9 +30,9 @@ def safe(fn, msg):
         st.error(f"{msg}: {e}")
         return None
 
-# ======================
-# API METEOBahia (7 días)
-# ======================
+# ===============================================================
+# 🔧 API METEOBAHIA (7 días)
+# ===============================================================
 API_URL = "https://meteobahia.com.ar/scripts/forecast/for-ta.xml"
 
 def _to_float(x):
@@ -46,14 +45,12 @@ def fetch_forecast():
     r.raise_for_status()
     root = ET.fromstring(r.content)
 
-    days = root.findall(".//forecast/tabular/day")
     rows = []
-    for d in days:
+    for d in root.findall(".//forecast/tabular/day"):
         fecha  = d.find("fecha").get("value")
         tmax   = d.find("tmax").get("value")
         tmin   = d.find("tmin").get("value")
         prec   = d.find("precip").get("value")
-
         rows.append({
             "Fecha": pd.to_datetime(fecha),
             "TMAX": _to_float(tmax),
@@ -65,9 +62,9 @@ def fetch_forecast():
     df["Julian_days"] = df["Fecha"].dt.dayofyear
     return df
 
-# ======================
-# ANN MODEL DE PREDICCIÓN
-# ======================
+# ===============================================================
+# 🔧 ANN — Modelo de predicción emergencia
+# ===============================================================
 class PracticalANNModel:
     def __init__(self, IW, bIW, LW, bLW):
         self.IW = IW
@@ -88,8 +85,7 @@ class PracticalANNModel:
             a1 = np.tanh(z1)
             z2 = self.LW @ a1 + self.bLW
             emer.append(np.tanh(z2))
-        emer = np.array(emer)
-        emer = (emer+1)/2
+        emer = (np.array(emer)+1)/2
         emer_ac = np.cumsum(emer)
         emerrel = np.diff(emer_ac, prepend=0)
         return emerrel, emer_ac
@@ -106,10 +102,11 @@ modelo_ann = safe(lambda: load_ann(), "Error cargando pesos ANN")
 if modelo_ann is None:
     st.stop()
 
-# ======================
-# CARGAR MODELO DE CLUSTERS
-# ======================
+# ===============================================================
+# 🔧 CARGAR MODELO DE CLUSTERS (SIN PANDAS)
+# ===============================================================
 def load_cluster_model():
+
     local_path = BASE/"modelo_cluster_d25_d50_d75_d95.pkl"
     alt_path   = Path("/mnt/data/modelo_cluster_d25_d50_d75_d95.pkl")
 
@@ -123,25 +120,31 @@ def load_cluster_model():
     with open(path, "rb") as f:
         data = pickle.load(f)
 
-    return data["scaler"], data["model"], data["metricas"], data["centroides"]
+    # Nuevo formato SIN pandas
+    scaler        = data["scaler"]
+    model         = data["model"]
+    centroides    = data["centroides"]       # numpy (2,4)
+    metricas_hist = data["metricas_hist"]    # dict
+    labels_hist   = data["labels_hist"]      # dict
 
-cluster_pack = safe(
-    lambda: load_cluster_model(),
-    "Error cargando modelo_cluster_d25_d50_d75_d95.pkl"
-)
+    return scaler, model, metricas_hist, labels_hist, centroides
+
+cluster_pack = safe(lambda: load_cluster_model(),
+    "Error cargando modelo_cluster_d25_d50_d75_d95.pkl")
 
 if cluster_pack is None:
     st.stop()
-else:
-    scaler_cl, model_cl, metricas_hist, centroides = cluster_pack
 
-# ======================
-# FUNCIONES D25–D95
-# ======================
+else:
+    scaler_cl, model_cl, metricas_hist, labels_hist, centroides = cluster_pack
+
+# ===============================================================
+# 🔧 FUNCIONES D25–D95
+# ===============================================================
 def calc_percentiles(dias, emerac):
-    if emerac.max() == 0:
+    if emerac.max()==0:
         return None
-    y = emerac/emerac.max()
+    y = emerac / emerac.max()
     d25 = np.interp(0.25, y, dias)
     d50 = np.interp(0.50, y, dias)
     d75 = np.interp(0.75, y, dias)
@@ -157,23 +160,24 @@ def curva(vals):
     return dias, curva
 
 def radar(vals, labels, title, color):
-    vals = list(vals); vals += vals[:1]
+    vals = vals + vals[:1]
     ang = np.linspace(0,2*np.pi,len(vals))
-    fig = plt.figure(figsize=(6,6))
+
+    fig = plt.figure(figsize=(5,5))
     ax = fig.add_subplot(111, polar=True)
     ax.plot(ang, vals, color=color, lw=3)
-    ax.fill(ang, vals, color=color, alpha=0.3)
+    ax.fill(ang, vals, color=color, alpha=0.25)
     ax.set_xticks(ang[:-1])
     ax.set_xticklabels(labels)
     ax.set_title(title)
     return fig
 
-# ======================
-# UI PRINCIPAL
-# ======================
+# ===============================================================
+# 🔧 UI
+# ===============================================================
 st.title("🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido")
 
-fuente = st.radio("Fuente de datos", [
+fuente = st.radio("Fuente de datos:", [
     "Histórico (meteo_daily.csv)",
     "Subir archivo CSV"
 ])
@@ -185,7 +189,7 @@ if fuente == "Histórico (meteo_daily.csv)":
         st.stop()
     df = pd.read_csv(BASE/"meteo_daily.csv", parse_dates=["Fecha"])
 else:
-    up = st.file_uploader("Subir archivo meteo_history.csv", type=["csv"])
+    up = st.file_uploader("Subir meteo_history.csv", type=["csv"])
     if up:
         df = pd.read_csv(up, parse_dates=["Fecha"])
 
@@ -195,27 +199,28 @@ if df is None:
 df["Julian_days"] = df["Fecha"].dt.dayofyear
 df = df.sort_values("Fecha")
 
-# ======================
-# ANN → EMERREL + EMERAC
-# ======================
+# ===============================================================
+# 🔧 ANN → EMERREL + EMERAC
+# ===============================================================
 X = df[["Julian_days","TMAX","TMIN","Prec"]].to_numpy(float)
 emerrel, emerac = modelo_ann.predict(X)
 
 df["EMERREL"] = emerrel
 df["EMERAC"] = emerac
 
-# ======================
-# CALCULAR PERCENTILES
-# ======================
+# ===============================================================
+# 🔧 CALCULAR PERCENTILES
+# ===============================================================
 dias = df["Julian_days"].to_numpy()
 res = calc_percentiles(dias, emerac)
+
 if res is None:
-    st.error("No se pudieron calcular percentiles")
+    st.error("No se pudieron calcular percentiles.")
     st.stop()
 
 d25,d50,d75,d95 = res
 
-st.subheader("📌 Percentiles simulados")
+st.subheader("📌 Percentiles simulados del año")
 st.write({
     "d25": round(d25,1),
     "d50": round(d50,1),
@@ -223,9 +228,9 @@ st.write({
     "d95": round(d95,1)
 })
 
-# ======================
-# CLASIFICACIÓN
-# ======================
+# ===============================================================
+# 🔧 CLASIFICACIÓN
+# ===============================================================
 entrada_sc = scaler_cl.transform([[d25,d50,d75,d95]])
 cl = int(model_cl.predict(entrada_sc)[0])
 
@@ -233,18 +238,18 @@ nombres = {1:"🌱 Temprano / Compacto", 0:"🌾 Extendido / Lento"}
 colors  = {1:"green", 0:"orange"}
 
 st.markdown(f"""
-## 🎯 Patrón:
+## 🎯 Patrón del año:
 ### <span style='color:{colors[cl]}; font-size:30px;'>{nombres[cl]}</span>
 """, unsafe_allow_html=True)
 
-# ======================
-# CURVAS COMPARATIVAS
-# ======================
-st.subheader("Curvas comparativas")
+# ===============================================================
+# 🔧 CURVAS COMPARATIVAS
+# ===============================================================
+st.subheader("Curva del año vs centroides históricos")
 
 dias_x, curva_x = curva([d25,d50,d75,d95])
-dias0, curva0 = curva(centroides.loc[0].values)
-dias1, curva1 = curva(centroides.loc[1].values)
+dias0, curva0 = curva(centroides[0])
+dias1, curva1 = curva(centroides[1])
 
 fig, ax = plt.subplots(figsize=(9,5))
 ax.plot(dias_x, curva_x, lw=3, label="Año simulado", color="blue")
@@ -255,13 +260,14 @@ ax.set_ylabel("EMERAC (0–1)")
 ax.legend()
 st.pyplot(fig)
 
-# ======================
-# RADAR
-# ======================
-st.subheader("Radar del patrón")
-fig_rad = radar([d25,d50,d75,d95], ["d25","d50","d75","d95"], "Radar", "blue")
+# ===============================================================
+# 🔧 RADAR
+# ===============================================================
+st.subheader("Radar del patrón del año")
+
+vals = [d25,d50,d75,d95]
+fig_rad = radar(vals, ["d25","d50","d75","d95"], "Radar", "blue")
 st.pyplot(fig_rad)
 
-# ======================
-# FIN
-# ======================
+# ===============================================================
+# FIN DEL SCRIPT
