@@ -1,4 +1,4 @@
-# app_emergencia.py (actualizado para histórico local + pronóstico API, con LOCKDOWN + 7 días de API)
+# app_emergencia.py — PREDWEEM + Clasificación Temprano/Extendido + Radar
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -6,6 +6,13 @@ from pathlib import Path
 import plotly.graph_objects as go
 import requests, time, xml.etree.ElementTree as ET
 from typing import Callable, Any
+import joblib
+
+# try importar find_peaks (si no está, hay fallback)
+try:
+    from scipy.signal import find_peaks
+except Exception:
+    find_peaks = None
 
 # ========= LOCKDOWN STREAMLIT (sin menú, sin toolbar, sin badges) =========
 st.set_page_config(
@@ -36,17 +43,15 @@ st.markdown(
 )
 # ========= FIN LOCKDOWN =========
 
-# ========= Utilidades de error seguro (mensajes genéricos en UI) =========
+BASE_DIR = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+
+# ========= Utilidades de error seguro =========
 def safe_run(fn: Callable[[], Any], user_msg: str):
     try:
         return fn()
     except Exception:
         st.error(user_msg)
         return None
-# ========= FIN utilidades =========
-
-# Ruta base del app
-BASE_DIR = Path(__file__).parent if "__file__" in globals() else Path.cwd()
 
 # =================== Modelo ANN ===================
 class PracticalANNModel:
@@ -61,7 +66,8 @@ class PracticalANNModel:
         self.low_thr = low
         self.med_thr = medium
 
-    def tansig(self, x): return np.tanh(x)
+    def tansig(self, x):
+        return np.tanh(x)
 
     def normalize_input(self, X_real):
         return 2 * (X_real - self.input_min) / (self.input_max - self.input_min) - 1
@@ -76,16 +82,19 @@ class PracticalANNModel:
         return self.tansig(z2)
 
     def _clasificar(self, valor):
-        if valor < self.low_thr: return "Bajo"
-        elif valor <= self.med_thr: return "Medio"
-        else: return "Alto"
+        if valor < self.low_thr:
+            return "Bajo"
+        elif valor <= self.med_thr:
+            return "Medio"
+        else:
+            return "Alto"
 
     def predict(self, X_real):
         X_norm = self.normalize_input(X_real)
         emerrel_pred = np.array([self._predict_single(x) for x in X_norm])
         emerrel_desnorm = self.desnormalizar_salida(emerrel_pred)
         emerrel_cumsum = np.cumsum(emerrel_desnorm)
-        valor_max_emeac = 8.05
+        valor_max_emeac = 8.05   # calibra total EMERAC
         emer_ac = emerrel_cumsum / valor_max_emeac
         emerrel_diff = np.diff(emer_ac, prepend=0)
         riesgo = np.array([self._clasificar(v) for v in emerrel_diff])
@@ -102,11 +111,13 @@ API_HEADERS = {
     "Referer": "https://meteobahia.com.ar/",
     "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
 }
-FORECAST_DAYS_LIMIT = 7  # fijo en código: usar solo los primeros 7 días de pronóstico
+FORECAST_DAYS_LIMIT = 7  # usar solo primeros 7 días de pronóstico
 
 def _to_float(x):
-    try: return float(str(x).replace(",", "."))
-    except: return None
+    try:
+        return float(str(x).replace(",", "."))
+    except:
+        return None
 
 @st.cache_data(ttl=15*60, show_spinner=False)
 def fetch_forecast(url: str = API_URL, retries: int = 3, backoff: int = 2) -> pd.DataFrame:
@@ -124,29 +135,31 @@ def fetch_forecast(url: str = API_URL, retries: int = 3, backoff: int = 2) -> pd
                 tmin   = d.find("./tmin")
                 precip = d.find("./precip")
                 fval = fecha.get("value") if fecha is not None else None
-                if not fval: continue
+                if not fval:
+                    continue
                 rows.append({
                     "Fecha": pd.to_datetime(fval).normalize(),
                     "TMAX": _to_float(tmax.get("value")) if tmax is not None else None,
                     "TMIN": _to_float(tmin.get("value")) if tmin is not None else None,
                     "Prec": _to_float(precip.get("value")) if precip is not None else 0.0,
                 })
-            if not rows: raise RuntimeError("XML sin días válidos.")
+            if not rows:
+                raise RuntimeError("XML sin días válidos.")
             df = pd.DataFrame(rows).sort_values("Fecha").reset_index(drop=True)
-            # === limitar a los primeros 7 días de pronóstico ===
             df = df.head(FORECAST_DAYS_LIMIT).copy()
             df["Julian_days"] = df["Fecha"].dt.dayofyear
             return df[["Fecha", "Julian_days", "TMAX", "TMIN", "Prec"]]
         except Exception as e:
             last_err = e
-            time.sleep(backoff*(i+1))
+            time.sleep(backoff * (i + 1))
     raise RuntimeError("No se pudo obtener el pronóstico desde la API.")
 
 # =================== Utilidades ===================
 def validar_columnas(df: pd.DataFrame) -> tuple[bool, str]:
     req = {"Fecha", "Julian_days", "TMAX", "TMIN", "Prec"}
     faltan = req - set(df.columns)
-    if faltan: return False, f"Faltan columnas: {', '.join(sorted(faltan))}"
+    if faltan:
+        return False, f"Faltan columnas: {', '.join(sorted(faltan))}"
     return True, ""
 
 def obtener_colores(niveles: pd.Series):
@@ -165,13 +178,7 @@ def load_weights(base_dir: Path):
     bias_out = np.load(base_dir / "bias_out.npy")
     return IW, bias_IW, LW, bias_out
 
-# === CLASIFICADOR TEMPRANO/EXTENDIDO ===
-import joblib
-try:
-    from scipy.signal import find_peaks
-except Exception:
-    find_peaks = None
-
+# ============= CLASIFICADOR TEMPRANO / EXTENDIDO =============
 CLUSTER_MODEL_FILE = "modelo_cluster_temprano_extendido.pkl"
 
 @st.cache_resource(show_spinner=False)
@@ -186,12 +193,11 @@ def _n_picos_emergencia(perfil: np.ndarray) -> int:
     if find_peaks is not None:
         peaks, _ = find_peaks(deriv, prominence=0.002)
         return int(len(peaks))
-    # fallback simple: cambios de pendiente de + a -
     s = np.sign(deriv)
     return int(((s[1:] - s[:-1]) < 0).sum())
 
 def calcular_metricas_cluster(pred_df: pd.DataFrame) -> dict:
-    """Calcula métricas d10..d90, IC121, n_picos, TEE90 a partir de EMERREL(0-1)."""
+    """Calcula d10..d90, IC121, n_picos, TEE90 a partir de EMERREL(0-1)."""
     df = pred_df.sort_values("Julian_days").copy()
     dias = df["Julian_days"].to_numpy()
     emer_daily = df["EMERREL(0-1)"].to_numpy()
@@ -233,60 +239,66 @@ def calcular_metricas_cluster(pred_df: pd.DataFrame) -> dict:
         "TEE90": TEE90,
     }
 
-# ============================================================
-# ==== RADAR TEMPRANO / EXTENDIDO (PLOTLY) PARA STREAMLIT ====
-# ============================================================
-import plotly.graph_objects as go
-import numpy as np
+# Centroides fijos (Opción B: valores típicos aproximados)
+centroides = {
+    0: {  # Temprano
+        "d_10": 45,
+        "d_25": 60,
+        "d_50": 70,
+        "d_75": 90,
+        "d_90": 110,
+        "IC_121": 0.22,
+        "n_picos": 3,
+        "TEE90": 60,
+    },
+    1: {  # Extendido
+        "d_10": 70,
+        "d_25": 90,
+        "d_50": 110,
+        "d_75": 130,
+        "d_90": 150,
+        "IC_121": 0.15,
+        "n_picos": 20,
+        "TEE90": 80,
+    },
+}
 
-def plot_radar_clusters(metricas_year, means_clusters):
-    """
-    metricas_year: diccionario con d10..TEE90 del año evaluado
-    means_clusters: dict con centroides {0: {...}, 1: {...}}
-    """
-
+def plot_radar_clusters(metricas_year: dict, means_clusters: dict):
     variables = ["d_10","d_25","d_50","d_75","d_90","IC_121","n_picos","TEE90"]
 
-    # Valores del año evaluado
     sample_vals = np.array([metricas_year[v] for v in variables])
+    c0_vals = np.array([means_clusters[0][v] for v in variables])
+    c1_vals = np.array([means_clusters[1][v] for v in variables])
 
-    # Centroides
-    cluster0_vals = np.array([means_clusters[0][v] for v in variables])
-    cluster1_vals = np.array([means_clusters[1][v] for v in variables])
-
-    # Normalización min-max
-    all_vals = np.vstack([sample_vals, cluster0_vals, cluster1_vals])
+    all_vals = np.vstack([sample_vals, c0_vals, c1_vals])
     min_vals = all_vals.min(axis=0)
     max_vals = all_vals.max(axis=0)
     range_vals = np.where(max_vals - min_vals == 0, 1, max_vals - min_vals)
 
-    sample_norm = (sample_vals - min_vals)/range_vals
-    c0_norm = (cluster0_vals - min_vals)/range_vals
-    c1_norm = (cluster1_vals - min_vals)/range_vals
+    sample_norm = (sample_vals - min_vals) / range_vals
+    c0_norm = (c0_vals - min_vals) / range_vals
+    c1_norm = (c1_vals - min_vals) / range_vals
 
     fig = go.Figure()
-
     fig.add_trace(go.Scatterpolar(
-        r = c0_norm,
-        theta = variables,
-        fill = 'toself',
-        name = 'Cluster Temprano',
+        r=c0_norm,
+        theta=variables,
+        fill='toself',
+        name='Cluster Temprano',
         line=dict(color='orange')
     ))
-
     fig.add_trace(go.Scatterpolar(
-        r = c1_norm,
-        theta = variables,
-        fill = 'toself',
-        name = 'Cluster Extendido',
+        r=c1_norm,
+        theta=variables,
+        fill='toself',
+        name='Cluster Extendido',
         line=dict(color='blue')
     ))
-
     fig.add_trace(go.Scatterpolar(
-        r = sample_norm,
-        theta = variables,
-        fill = 'toself',
-        name = 'Año Evaluado',
+        r=sample_norm,
+        theta=variables,
+        fill='toself',
+        name='Año Evaluado',
         line=dict(color='green', dash='dash')
     ))
 
@@ -295,12 +307,7 @@ def plot_radar_clusters(metricas_year, means_clusters):
         showlegend=True,
         title="Radar del Patrón: Año Evaluado vs Clusters"
     )
-
     return fig
-
-
-
-
 
 # =================== UI ===================
 st.title("PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp. TRES ARROYOS")
@@ -313,28 +320,33 @@ fuente = st.sidebar.radio(
 
 st.sidebar.header("Configuración")
 umbral_usuario = st.sidebar.number_input(
-    "Umbral de EMEAC para 100%", min_value=1.2, max_value=3.0, value=2.70, step=0.01, format="%.2f"
+    "Umbral de EMEAC para 100%", min_value=1.2, max_value=3.0,
+    value=2.70, step=0.01, format="%.2f"
 )
 
 st.sidebar.header("Validaciones")
-mostrar_fuera_rango = st.sidebar.checkbox("Avisar datos fuera de rango de entrenamiento", value=False)
+mostrar_fuera_rango = st.sidebar.checkbox(
+    "Avisar datos fuera de rango de entrenamiento", value=False
+)
 
 if st.sidebar.button("Forzar recarga de datos"):
     st.cache_data.clear()
 
-# Pesos modelo (mensaje genérico si falta algo)
+# Pesos modelo ANN
 def _cargar_pesos():
     return load_weights(BASE_DIR)
+
 pesos = safe_run(
     _cargar_pesos,
     "Error al cargar archivos del modelo. Verifique que IW.npy, bias_IW.npy, LW.npy y bias_out.npy estén junto al script."
 )
 if pesos is None:
     st.stop()
+
 IW, bias_IW, LW, bias_out = pesos
 modelo = PracticalANNModel(IW, bias_IW, LW, bias_out)
 
-# Cargar modelo de cluster (Temprano/Extendido)
+# Modelo de cluster Temprano/Extendido
 cluster_model = safe_run(
     lambda: load_cluster_model(BASE_DIR),
     f"No se pudo cargar el modelo de patrón {CLUSTER_MODEL_FILE}. Colocá el archivo junto al script si querés clasificar Temprano/Extendido."
@@ -351,8 +363,11 @@ if fuente == "Histórico local + Pronóstico (API)":
         df_hist = safe_run(_leer_hist_local, "No se pudo leer el histórico local.")
     else:
         st.warning("No se encontró el histórico local. Subí un CSV en la opción de carga para combinar con la API.")
-elif fuente == "Subir histórico + usar Pronóstico (API)":
-    up = st.file_uploader("Subí el histórico (.csv) con columnas: Fecha, Julian_days, TMAX, TMIN, Prec", type=["csv"])
+else:
+    up = st.file_uploader(
+        "Subí el histórico (.csv) con columnas: Fecha, Julian_days, TMAX, TMIN, Prec",
+        type=["csv"]
+    )
     if up is not None:
         def _leer_hist_upload():
             return pd.read_csv(up, parse_dates=["Fecha"])
@@ -409,7 +424,7 @@ def plot_and_table(nombre, df):
     pred["EMERREL acumulado"] = pred["EMERREL(0-1)"].cumsum()
     pred["EMERREL_MA5"] = pred["EMERREL(0-1)"].rolling(window=5, min_periods=1).mean()
 
-    # === Cálculo de EMEAC con distintos umbrales ===
+    # EMEAC con distintos umbrales
     pred["EMEAC (0-1) - mínimo"] = pred["EMERREL acumulado"] / 1.2
     pred["EMEAC (0-1) - máximo"] = pred["EMERREL acumulado"] / 3.0
     pred["EMEAC (0-1) - ajustable"] = pred["EMERREL acumulado"] / umbral_usuario
@@ -417,14 +432,16 @@ def plot_and_table(nombre, df):
     pred["EMEAC (%) - máximo"] = pred["EMEAC (0-1) - máximo"] * 100
     pred["EMEAC (%) - ajustable"] = pred["EMEAC (0-1) - ajustable"] * 100
 
-    # === Selección de año para visualización y clasificación ===
+    # Selección de año
     years = pred["Fecha"].dt.year.unique()
     yr = int(years[0]) if len(years) == 1 else int(
-        st.sidebar.selectbox("Año a mostrar (reinicio 1/feb → 1/sep)",
-                             sorted(years), key=f"year_select_{nombre}")
+        st.sidebar.selectbox(
+            "Año a mostrar (reinicio 1/feb → 1/sep)",
+            sorted(years), key=f"year_select_{nombre}"
+        )
     )
 
-    # ---------- CLASIFICACIÓN TEMPRANO / EXTENDIDO ----------
+    # Clasificación Temprano/Extendido (año completo)
     cluster_label = None
     metricas_cluster = None
     if cluster_model is not None:
@@ -436,17 +453,20 @@ def plot_and_table(nombre, df):
                                 metricas_cluster["d_90"], metricas_cluster["IC_121"],
                                 metricas_cluster["n_picos"], metricas_cluster["TEE90"]]])
             cl = int(cluster_model.predict(X_pred)[0])
+            proba = cluster_model.predict_proba(X_pred)[0]
             cluster_label = "Temprano" if cl == 0 else "Extendido"
+            st.markdown(
+                f"### Patrón estimado {yr} ({nombre}): **{cluster_label}**  "
+                f"(P(Temprano)={proba[0]:.2f}, P(Extendido)={proba[1]:.2f})"
+            )
+            with st.expander("Ver métricas usadas para el patrón"):
+                st.write(metricas_cluster)
 
-    if cluster_label is not None:
-        st.markdown(
-            f"### Patrón estimado {yr} ({nombre}): "
-            f"**{cluster_label}**"
-        )
-        with st.expander("Ver métricas usadas para el patrón"):
-            st.write(metricas_cluster)
+            # Radar
+            fig_radar = plot_radar_clusters(metricas_cluster, centroides)
+            st.plotly_chart(fig_radar, use_container_width=True)
 
-    # ---------- Recorte 1-feb → 1-sep para gráficos ----------
+    # Recorte 1-feb → 1-sep
     fecha_inicio_rango = pd.Timestamp(year=yr, month=2, day=1)
     fecha_fin_rango    = pd.Timestamp(year=yr, month=9, day=1)
     mask = (pred["Fecha"] >= fecha_inicio_rango) & (pred["Fecha"] <= fecha_fin_rango)
@@ -473,7 +493,8 @@ def plot_and_table(nombre, df):
         x=pred_vis["Fecha"], y=pred_vis["EMERREL(0-1)"],
         marker=dict(color=colores_vis.tolist()),
         hovertemplate=("Fecha: %{x|%d-%b-%Y}<br>EMERREL: %{y:.3f}<br>Nivel: %{customdata}"),
-        customdata=pred_vis["Nivel_Emergencia_relativa"], name="EMERREL (0-1)",
+        customdata=pred_vis["Nivel_Emergencia_relativa"],
+        name="EMERREL (0-1)",
     )
     fig_er.add_trace(go.Scatter(
         x=pred_vis["Fecha"], y=pred_vis["EMERREL_MA5_rango"],
@@ -487,17 +508,23 @@ def plot_and_table(nombre, df):
         hoverinfo="skip", showlegend=False
     ))
     low_thr = float(modelo.low_thr); med_thr = float(modelo.med_thr)
-    fig_er.add_trace(go.Scatter(x=[fecha_inicio_rango, fecha_fin_rango], y=[low_thr, low_thr],
+    fig_er.add_trace(go.Scatter(
+        x=[fecha_inicio_rango, fecha_fin_rango], y=[low_thr, low_thr],
         mode="lines", line=dict(color="green", dash="dot"),
         name=f"Bajo (≤ {low_thr:.3f})", hoverinfo="skip"))
-    fig_er.add_trace(go.Scatter(x=[fecha_inicio_rango, fecha_fin_rango], y=[med_thr, med_thr],
+    fig_er.add_trace(go.Scatter(
+        x=[fecha_inicio_rango, fecha_fin_rango], y=[med_thr, med_thr],
         mode="lines", line=dict(color="orange", dash="dot"),
         name=f"Medio (≤ {med_thr:.3f})", hoverinfo="skip"))
-    fig_er.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
-        line=dict(color="red", dash="dot"), name=f"Alto (> {med_thr:.3f})",
+    fig_er.add_trace(go.Scatter(
+        x=[None], y=[None], mode="lines",
+        line=dict(color="red", dash="dot"),
+        name=f"Alto (> {med_thr:.3f})",
         hoverinfo="skip", showlegend=True))
-    fig_er.update_layout(xaxis_title="Fecha", yaxis_title="EMERREL (0-1)",
-                         hovermode="x unified", legend_title="Referencias", height=650)
+    fig_er.update_layout(
+        xaxis_title="Fecha", yaxis_title="EMERREL (0-1)",
+        hovermode="x unified", legend_title="Referencias", height=650
+    )
     fig_er.update_xaxes(range=[fecha_inicio_rango, fecha_fin_rango], dtick="M1", tickformat="%b")
     fig_er.update_yaxes(rangemode="tozero")
     st.plotly_chart(fig_er, use_container_width=True, theme="streamlit")
@@ -505,28 +532,36 @@ def plot_and_table(nombre, df):
     # ---------- Gráfico EMERGENCIA ACUMULADA ----------
     st.subheader("EMERGENCIA ACUMULADA DIARIA - TRES ARROYOS")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - máximo (rango)"],
-                             mode="lines", line=dict(width=0), name="Máximo (reiniciado)",
-                             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
-    fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - mínimo (rango)"],
-                             mode="lines", line=dict(width=0), fill="tonexty", name="Mínimo (reiniciado)",
-                             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
-    fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - ajustable (rango)"],
-                             mode="lines", name="Umbral ajustable (reiniciado)",
-                             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Ajustable: %{y:.1f}%<extra></extra>",
-                             line=dict(width=2.5)))
-    fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - mínimo (rango)"],
-                             mode="lines", name="Umbral mínimo (reiniciado)",
-                             line=dict(dash="dash", width=1.5),
-                             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
-    fig.add_trace(go.Scatter(x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - máximo (rango)"],
-                             mode="lines", name="Umbral máximo (reiniciado)",
-                             line=dict(dash="dash", width=1.5),
-                             hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - máximo (rango)"],
+        mode="lines", line=dict(width=0), name="Máximo (reiniciado)",
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - mínimo (rango)"],
+        mode="lines", line=dict(width=0), fill="tonexty", name="Mínimo (reiniciado)",
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - ajustable (rango)"],
+        mode="lines", name="Umbral ajustable (reiniciado)",
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Ajustable: %{y:.1f}%<extra></extra>",
+        line=dict(width=2.5)))
+    fig.add_trace(go.Scatter(
+        x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - mínimo (rango)"],
+        mode="lines", name="Umbral mínimo (reiniciado)",
+        line=dict(dash="dash", width=1.5),
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Mínimo: %{y:.1f}%<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=pred_vis["Fecha"], y=pred_vis["EMEAC (%) - máximo (rango)"],
+        mode="lines", name="Umbral máximo (reiniciado)",
+        line=dict(dash="dash", width=1.5),
+        hovertemplate="Fecha: %{x|%d-%b-%Y}<br>Máximo: %{y:.1f}%<extra></extra>"))
     for nivel in [25, 50, 75, 90]:
         fig.add_hline(y=nivel, line_dash="dash", opacity=0.6, annotation_text=f"{nivel}%")
-    fig.update_layout(xaxis_title="Fecha", yaxis_title="EMEAC (%)", yaxis=dict(range=[0, 100]),
-                      hovermode="x unified", legend_title="Referencias", height=600)
+    fig.update_layout(
+        xaxis_title="Fecha", yaxis_title="EMEAC (%)",
+        yaxis=dict(range=[0, 100]),
+        hovermode="x unified", legend_title="Referencias", height=600
+    )
     fig.update_xaxes(range=[fecha_inicio_rango, fecha_fin_rango], dtick="M1", tickformat="%b")
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
@@ -538,7 +573,9 @@ def plot_and_table(nombre, df):
     )
     st.dataframe(tabla, use_container_width=True)
     csv = tabla.to_csv(index=False).encode("utf-8")
-    st.download_button(f"Descargar resultados (rango) - {nombre}", csv, f"{nombre}_resultados_rango.csv", "text/csv")
+    st.download_button(f"Descargar resultados (rango) - {nombre}",
+                       csv, f"{nombre}_resultados_rango.csv", "text/csv")
 
 for nombre, df in dfs:
     plot_and_table(nombre, df)
+
