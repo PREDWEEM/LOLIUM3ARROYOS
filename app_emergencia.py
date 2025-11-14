@@ -293,6 +293,53 @@ fig_rad = radar_multiseries(
 )
 
 st.pyplot(fig_rad)
+# ===============================================================
+# 🔧 GRÁFICO DE CERTEZA TEMPORAL DEL PATRÓN
+# ===============================================================
+st.subheader("📈 Certeza temporal del patrón (día por día)")
+
+probs_temp = []
+probs_ext = []
+dias_eval = []
+
+for i in range(5, len(df)):
+
+    dias_parc = dias[:i]
+    emerac_parc = emerac[:i]
+
+    res_parc = calc_percentiles(dias_parc, emerac_parc)
+    if res_parc is None:
+        continue
+
+    d25_p, d50_p, d75_p, d95_p = res_parc
+
+    entrada_sc_parc = scaler_cl.transform([[d25_p, d50_p, d75_p, d95_p]])
+
+    # KMeans → distancias a centroides = inverso de probabilidad
+    d_ext = np.linalg.norm(
+        entrada_sc_parc - model_cl.cluster_centers_[0].reshape(1,-1)
+    )
+    d_temp = np.linalg.norm(
+        entrada_sc_parc - model_cl.cluster_centers_[1].reshape(1,-1)
+    )
+
+    prob_temp = d_ext / (d_ext + d_temp)
+    prob_ext = d_temp / (d_ext + d_temp)
+
+    dias_eval.append(dias_parc[-1])
+    probs_temp.append(prob_temp)
+    probs_ext.append(prob_ext)
+
+figp, axp = plt.subplots(figsize=(9,5))
+axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano", color="green", lw=2.5)
+axp.plot(dias_eval, probs_ext, label="Probabilidad Extendido", color="orange", lw=2.5)
+
+axp.set_ylim(0,1)
+axp.set_xlabel("Día juliano")
+axp.set_ylabel("Probabilidad")
+axp.set_title("Evolución de la certeza del patrón")
+axp.legend()
+st.pyplot(figp)
 
 # ===============================================================
 # FIN DEL SCRIPT
