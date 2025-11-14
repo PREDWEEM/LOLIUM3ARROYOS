@@ -1,6 +1,6 @@
 # ===============================================================
-# 🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido
-# Integración ANN + Clustering d25–d95 (sin Pandas)
+# 🌾 PREDWEEM v7.1 — ANN + Clasificación Temprano/Extendido
+# EMERREL postprocesada → EMERAC suave, monotónica y normalizada
 # ===============================================================
 
 import streamlit as st
@@ -14,7 +14,7 @@ from pathlib import Path
 # 🔧 CONFIG STREAMLIT
 # ===============================================================
 st.set_page_config(
-    page_title="PREDWEEM v7 – Emergencia + Patrón",
+    page_title="PREDWEEM v7.1 – Emergencia + Patrón",
     layout="wide",
 )
 
@@ -36,8 +36,10 @@ def safe(fn, msg):
 API_URL = "https://meteobahia.com.ar/scripts/forecast/for-ta.xml"
 
 def _to_float(x):
-    try: return float(str(x).replace(",", "."))
-    except: return None
+    try:
+        return float(str(x).replace(",", "."))
+    except:
+        return None
 
 @st.cache_data(ttl=900)
 def fetch_forecast():
@@ -71,13 +73,18 @@ class PracticalANNModel:
         self.bIW = bIW
         self.LW = LW
         self.bLW = bLW
-        self.input_min = np.array([1,0,-7,0])
-        self.input_max = np.array([300,41,25.5,84])
+        self.input_min = np.array([1, 0, -7, 0])
+        self.input_max = np.array([300, 41, 25.5, 84])
 
     def normalize(self, X):
         return 2*(X - self.input_min)/(self.input_max - self.input_min)-1
 
     def predict(self, Xreal):
+        """
+        Devuelve EMERREL crudo de la red (sin post-procesamiento)
+        y EMERAC crudo (simple cumsum).
+        El post-procesamiento se hace afuera.
+        """
         Xn = self.normalize(Xreal)
         emer = []
         for x in Xn:
@@ -85,28 +92,64 @@ class PracticalANNModel:
             a1 = np.tanh(z1)
             z2 = self.LW @ a1 + self.bLW
             emer.append(np.tanh(z2))
-        emer = (np.array(emer)+1)/2
-        emer_ac = np.cumsum(emer)
-        emerrel = np.diff(emer_ac, prepend=0)
+        emer = (np.array(emer) + 1) / 2           # 0–1 (diario, crudo)
+        emer_ac = np.cumsum(emer)                 # acumulada cruda
+        emerrel = np.diff(emer_ac, prepend=0)     # debería coincidir con emer
         return emerrel, emer_ac
 
 @st.cache_resource
 def load_ann():
-    IW = np.load(BASE/"IW.npy")
+    IW  = np.load(BASE/"IW.npy")
     bIW = np.load(BASE/"bias_IW.npy")
-    LW = np.load(BASE/"LW.npy")
+    LW  = np.load(BASE/"LW.npy")
     bLW = np.load(BASE/"bias_out.npy")
-    return PracticalANNModel(IW,bIW,LW,bLW)
+    return PracticalANNModel(IW, bIW, LW, bLW)
 
 modelo_ann = safe(lambda: load_ann(), "Error cargando pesos ANN")
 if modelo_ann is None:
     st.stop()
 
 # ===============================================================
+# 🔧 POST-PROCESO EMERGENCIA (suavizado + recorte + normalización)
+# ===============================================================
+def postprocess_emergence(emerrel_raw,
+                          smooth=True,
+                          window=3,
+                          rescale_to_one=True,
+                          clip_zero=True):
+    """
+    Toma EMERREL cruda de la ANN y devuelve:
+    - emerrel_proc: EMERREL suavizada y consistente
+    - emerac_proc : EMERAC acumulada, monotónica, terminando en 1 (si rescale=True)
+    """
+    emer = np.array(emerrel_raw, dtype=float)
+
+    # 1) Recortar posibles negativos
+    if clip_zero:
+        emer = np.maximum(emer, 0.0)
+
+    # 2) Suavizado por media móvil
+    if smooth and len(emer) > 1 and window > 1:
+        window = int(window)
+        window = max(1, min(window, len(emer)))
+        if window > 1:
+            kernel = np.ones(window, dtype=float) / window
+            emer = np.convolve(emer, kernel, mode="same")
+
+    # 3) EMERAC acumulada
+    emerac = np.cumsum(emer)
+
+    # 4) Reescalar para que EMERAC final sea 1
+    if rescale_to_one and emerac[-1] > 0:
+        emerac = emerac / emerac[-1]
+        emer = np.diff(emerac, prepend=0)
+
+    return emer, emerac
+
+# ===============================================================
 # 🔧 CARGAR MODELO DE CLUSTERS (SIN PANDAS)
 # ===============================================================
 def load_cluster_model():
-
     local_path = BASE/"modelo_cluster_d25_d50_d75_d95.pkl"
     alt_path   = Path("/mnt/data/modelo_cluster_d25_d50_d75_d95.pkl")
 
@@ -140,19 +183,20 @@ else:
 # 🔧 FUNCIONES D25–D95
 # ===============================================================
 def calc_percentiles(dias, emerac):
-    if emerac.max()==0: return None
+    if emerac.max() == 0:
+        return None
     y = emerac / emerac.max()
     d25 = np.interp(0.25, y, dias)
     d50 = np.interp(0.50, y, dias)
     d75 = np.interp(0.75, y, dias)
     d95 = np.interp(0.95, y, dias)
-    return d25,d50,d75,d95
+    return d25, d50, d75, d95
 
 def curva(vals):
-    d25,d50,d75,d95 = vals
-    x = np.array([d25,d50,d75,d95])
-    y = np.array([0.25,0.50,0.75,0.95])
-    dias = np.arange(20,200)
+    d25, d50, d75, d95 = vals
+    x = np.array([d25, d50, d75, d95])
+    y = np.array([0.25, 0.50, 0.75, 0.95])
+    dias = np.arange(20, 200)
     curva = np.interp(dias, x, y)
     return dias, curva
 
@@ -174,7 +218,7 @@ def radar_multiseries(values_dict, labels, title):
     }
 
     for name, vals in values_dict.items():
-        vals2 = vals + [vals[0]]
+        vals2 = list(vals) + [vals[0]]
         ax.plot(angles, vals2, lw=2.5, label=name, color=colors[name])
         ax.fill(angles, vals2, alpha=0.15, color=colors[name])
 
@@ -188,7 +232,15 @@ def radar_multiseries(values_dict, labels, title):
 # ===============================================================
 # 🔧 UI PRINCIPAL
 # ===============================================================
-st.title("🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido")
+st.title("🌾 PREDWEEM v7.1 — ANN + Clasificación Temprano/Extendido")
+
+# ---- Controles de post-proceso en el sidebar ----
+with st.sidebar:
+    st.header("Ajustes de emergencia")
+    use_smoothing = st.checkbox("Suavizar EMERREL", value=True)
+    window_size = st.slider("Ventana de suavizado (días)", min_value=1, max_value=9, value=3, step=1)
+    rescale_to_one = st.checkbox("Forzar EMERAC final = 1", value=True)
+    clip_zero = st.checkbox("Recortar negativos a 0", value=True)
 
 fuente = st.radio("Fuente de datos:", [
     "Histórico (meteo_daily.csv)",
@@ -213,10 +265,18 @@ df["Julian_days"] = df["Fecha"].dt.dayofyear
 df = df.sort_values("Fecha")
 
 # ===============================================================
-# 🔧 ANN → EMERREL + EMERAC
+# 🔧 ANN → EMERREL CRUDA + POST-PROCESO → EMERREL / EMERAC
 # ===============================================================
-X = df[["Julian_days","TMAX","TMIN","Prec"]].to_numpy(float)
-emerrel, emerac = modelo_ann.predict(X)
+X = df[["Julian_days", "TMAX", "TMIN", "Prec"]].to_numpy(float)
+emerrel_raw, emerac_raw = modelo_ann.predict(X)
+
+emerrel, emerac = postprocess_emergence(
+    emerrel_raw,
+    smooth=use_smoothing,
+    window=window_size,
+    rescale_to_one=rescale_to_one,
+    clip_zero=clip_zero,
+)
 
 df["EMERREL"] = emerrel
 df["EMERAC"] = emerac
@@ -231,24 +291,24 @@ if res is None:
     st.error("No se pudieron calcular percentiles.")
     st.stop()
 
-d25,d50,d75,d95 = res
+d25, d50, d75, d95 = res
 
-st.subheader("📌 Percentiles simulados del año")
+st.subheader("📌 Percentiles simulados del año (sobre EMERAC post-procesada)")
 st.write({
-    "d25": round(d25,1),
-    "d50": round(d50,1),
-    "d75": round(d75,1),
-    "d95": round(d95,1)
+    "d25": round(d25, 1),
+    "d50": round(d50, 1),
+    "d75": round(d75, 1),
+    "d95": round(d95, 1)
 })
 
 # ===============================================================
 # 🔧 CLASIFICACIÓN
 # ===============================================================
-entrada_sc = scaler_cl.transform([[d25,d50,d75,d95]])
+entrada_sc = scaler_cl.transform([[d25, d50, d75, d95]])
 cl = int(model_cl.predict(entrada_sc)[0])
 
-nombres = {1:"🌱 Temprano / Compacto", 0:"🌾 Extendido / Lento"}
-colors  = {1:"green", 0:"orange"}
+nombres = {1: "🌱 Temprano / Compacto", 0: "🌾 Extendido / Lento"}
+colors  = {1: "green", 0: "orange"}
 
 st.markdown(f"""
 ## 🎯 Patrón del año:
@@ -260,14 +320,14 @@ st.markdown(f"""
 # ===============================================================
 st.subheader("Curva del año vs centroides históricos")
 
-dias_x, curva_x = curva([d25,d50,d75,d95])
-dias_ext, curva_ext = curva(centroides[0])
+dias_x, curva_x    = curva([d25, d50, d75, d95])
+dias_ext, curva_ext   = curva(centroides[0])
 dias_temp, curva_temp = curva(centroides[1])
 
 fig, ax = plt.subplots(figsize=(9,5))
-ax.plot(dias_x, curva_x, lw=3, label="Año evaluado", color="blue")
-ax.plot(dias_temp, curva_temp, lw=2, label="Centroide Temprano", color="green")
-ax.plot(dias_ext, curva_ext, lw=2, label="Centroide Extendido", color="orange")
+ax.plot(dias_x,   curva_x,   lw=3, label="Año evaluado",       color="blue")
+ax.plot(dias_temp, curva_temp, lw=2, label="Centroide Temprano",   color="green")
+ax.plot(dias_ext,  curva_ext,  lw=2, label="Centroide Extendido",  color="orange")
 ax.set_xlabel("Día juliano")
 ax.set_ylabel("EMERAC (0–1)")
 ax.legend()
@@ -278,7 +338,7 @@ st.pyplot(fig)
 # ===============================================================
 st.subheader("Radar comparativo del patrón")
 
-vals_year = [d25,d50,d75,d95]
+vals_year = [d25, d50, d75, d95]
 vals_temp = list(centroides[1])
 vals_ext  = list(centroides[0])
 
@@ -288,23 +348,24 @@ fig_rad = radar_multiseries(
         "Temprano": vals_temp,
         "Extendido": vals_ext
     },
-    labels=["d25","d50","d75","d95"],
+    labels=["d25", "d50", "d75", "d95"],
     title="Radar — Año Evaluado vs Temprano vs Extendido"
 )
 
 st.pyplot(fig_rad)
+
 # ===============================================================
 # 🔧 GRÁFICO DE CERTEZA TEMPORAL DEL PATRÓN
 # ===============================================================
 st.subheader("📈 Certeza temporal del patrón (día por día)")
 
 probs_temp = []
-probs_ext = []
-dias_eval = []
+probs_ext  = []
+dias_eval  = []
 
 for i in range(5, len(df)):
 
-    dias_parc = dias[:i]
+    dias_parc   = dias[:i]
     emerac_parc = emerac[:i]
 
     res_parc = calc_percentiles(dias_parc, emerac_parc)
@@ -315,26 +376,34 @@ for i in range(5, len(df)):
 
     entrada_sc_parc = scaler_cl.transform([[d25_p, d50_p, d75_p, d95_p]])
 
-    # KMeans → distancias a centroides = inverso de probabilidad
+    # Distancias a centroides en espacio escaleado
     d_ext = np.linalg.norm(
-        entrada_sc_parc - model_cl.cluster_centers_[0].reshape(1,-1)
+        entrada_sc_parc - model_cl.cluster_centers_[0].reshape(1, -1)
     )
     d_temp = np.linalg.norm(
-        entrada_sc_parc - model_cl.cluster_centers_[1].reshape(1,-1)
+        entrada_sc_parc - model_cl.cluster_centers_[1].reshape(1, -1)
     )
 
-    prob_temp = d_ext / (d_ext + d_temp)
-    prob_ext = d_temp / (d_ext + d_temp)
+    # Probabilidades ~ inverso de la distancia
+    if d_ext == 0 and d_temp == 0:
+        prob_temp = 0.5
+        prob_ext  = 0.5
+    else:
+        w_ext  = 1.0 / (d_ext + 1e-9)
+        w_temp = 1.0 / (d_temp + 1e-9)
+        s = w_ext + w_temp
+        prob_temp = w_temp / s
+        prob_ext  = w_ext / s
 
     dias_eval.append(dias_parc[-1])
     probs_temp.append(prob_temp)
     probs_ext.append(prob_ext)
 
 figp, axp = plt.subplots(figsize=(9,5))
-axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano", color="green", lw=2.5)
-axp.plot(dias_eval, probs_ext, label="Probabilidad Extendido", color="orange", lw=2.5)
+axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.5)
+axp.plot(dias_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.5)
 
-axp.set_ylim(0,1)
+axp.set_ylim(0, 1)
 axp.set_xlabel("Día juliano")
 axp.set_ylabel("Probabilidad")
 axp.set_title("Evolución de la certeza del patrón")
