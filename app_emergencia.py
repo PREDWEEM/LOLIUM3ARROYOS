@@ -120,7 +120,6 @@ def load_cluster_model():
     with open(path, "rb") as f:
         data = pickle.load(f)
 
-    # Nuevo formato SIN pandas
     scaler        = data["scaler"]
     model         = data["model"]
     centroides    = data["centroides"]       # numpy (2,4)
@@ -134,7 +133,6 @@ cluster_pack = safe(lambda: load_cluster_model(),
 
 if cluster_pack is None:
     st.stop()
-
 else:
     scaler_cl, model_cl, metricas_hist, labels_hist, centroides = cluster_pack
 
@@ -142,8 +140,7 @@ else:
 # 🔧 FUNCIONES D25–D95
 # ===============================================================
 def calc_percentiles(dias, emerac):
-    if emerac.max()==0:
-        return None
+    if emerac.max()==0: return None
     y = emerac / emerac.max()
     d25 = np.interp(0.25, y, dias)
     d50 = np.interp(0.50, y, dias)
@@ -159,21 +156,37 @@ def curva(vals):
     curva = np.interp(dias, x, y)
     return dias, curva
 
-def radar(vals, labels, title, color):
-    vals = vals + vals[:1]
-    ang = np.linspace(0,2*np.pi,len(vals))
+# ===============================================================
+# 🔧 RADAR MULTISERIES
+# ===============================================================
+def radar_multiseries(values_dict, labels, title):
 
-    fig = plt.figure(figsize=(5,5))
+    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False)
+    angles = np.concatenate((angles, [angles[0]]))
+
+    fig = plt.figure(figsize=(6,6))
     ax = fig.add_subplot(111, polar=True)
-    ax.plot(ang, vals, color=color, lw=3)
-    ax.fill(ang, vals, color=color, alpha=0.25)
-    ax.set_xticks(ang[:-1])
+
+    colors = {
+        "Año evaluado": "blue",
+        "Temprano": "green",
+        "Extendido": "orange"
+    }
+
+    for name, vals in values_dict.items():
+        vals2 = vals + [vals[0]]
+        ax.plot(angles, vals2, lw=2.5, label=name, color=colors[name])
+        ax.fill(angles, vals2, alpha=0.15, color=colors[name])
+
+    ax.set_xticks(angles[:-1])
     ax.set_xticklabels(labels)
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14)
+    ax.legend(loc="lower right", bbox_to_anchor=(1.3, 0.1))
+
     return fig
 
 # ===============================================================
-# 🔧 UI
+# 🔧 UI PRINCIPAL
 # ===============================================================
 st.title("🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido")
 
@@ -209,7 +222,7 @@ df["EMERREL"] = emerrel
 df["EMERAC"] = emerac
 
 # ===============================================================
-# 🔧 CALCULAR PERCENTILES
+# 🔧 PERCENTILES
 # ===============================================================
 dias = df["Julian_days"].to_numpy()
 res = calc_percentiles(dias, emerac)
@@ -248,26 +261,40 @@ st.markdown(f"""
 st.subheader("Curva del año vs centroides históricos")
 
 dias_x, curva_x = curva([d25,d50,d75,d95])
-dias0, curva0 = curva(centroides[0])
-dias1, curva1 = curva(centroides[1])
+dias_ext, curva_ext = curva(centroides[0])
+dias_temp, curva_temp = curva(centroides[1])
 
 fig, ax = plt.subplots(figsize=(9,5))
-ax.plot(dias_x, curva_x, lw=3, label="Año simulado", color="blue")
-ax.plot(dias1, curva1, lw=2, label="Centroide Temprano", color="green")
-ax.plot(dias0, curva0, lw=2, label="Centroide Extendido", color="orange")
+ax.plot(dias_x, curva_x, lw=3, label="Año evaluado", color="blue")
+ax.plot(dias_temp, curva_temp, lw=2, label="Centroide Temprano", color="green")
+ax.plot(dias_ext, curva_ext, lw=2, label="Centroide Extendido", color="orange")
 ax.set_xlabel("Día juliano")
 ax.set_ylabel("EMERAC (0–1)")
 ax.legend()
 st.pyplot(fig)
 
 # ===============================================================
-# 🔧 RADAR
+# 🔧 RADAR MULTISERIES
 # ===============================================================
-st.subheader("Radar del patrón del año")
+st.subheader("Radar comparativo del patrón")
 
-vals = [d25,d50,d75,d95]
-fig_rad = radar(vals, ["d25","d50","d75","d95"], "Radar", "blue")
+vals_year = [d25,d50,d75,d95]
+vals_temp = list(centroides[1])
+vals_ext  = list(centroides[0])
+
+fig_rad = radar_multiseries(
+    {
+        "Año evaluado": vals_year,
+        "Temprano": vals_temp,
+        "Extendido": vals_ext
+    },
+    labels=["d25","d50","d75","d95"],
+    title="Radar — Año Evaluado vs Temprano vs Extendido"
+)
+
 st.pyplot(fig_rad)
 
 # ===============================================================
 # FIN DEL SCRIPT
+# ===============================================================
+
