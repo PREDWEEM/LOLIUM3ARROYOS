@@ -1,6 +1,10 @@
 # ===============================================================
-# 🌾 PREDWEEM v7.1 — ANN + Clasificación Temprano/Extendido
-# EMERREL postprocesada → EMERAC suave, monotónica y normalizada
+# 🌾 PREDWEEM v7.2 — ANN + Clasificación robusta con datos parciales
+# - ANN → EMERREL diaria
+# - Post-proceso: recorte negativos, suavizado opcional, acumulado
+# - Percentiles d25–d95 calculados sobre la curva disponible (truncada)
+# - Clasificación Temprano / Extendido + confianza (ALTA / MEDIA / BAJA)
+# - Momento crítico en fecha calendario real
 # ===============================================================
 
 import streamlit as st
@@ -14,7 +18,7 @@ from pathlib import Path
 # 🔧 CONFIG STREAMLIT
 # ===============================================================
 st.set_page_config(
-    page_title="PREDWEEM v7.1 – Emergencia + Patrón",
+    page_title="PREDWEEM v7.2 – Emergencia + Patrón (datos parciales)",
     layout="wide",
 )
 
@@ -31,7 +35,7 @@ def safe(fn, msg):
         return None
 
 # ===============================================================
-# 🔧 API METEOBAHIA (7 días)
+# 🔧 API METEOBAHIA (7 días) — OPCIONAL
 # ===============================================================
 API_URL = "https://meteobahia.com.ar/scripts/forecast/for-ta.xml"
 
@@ -73,6 +77,7 @@ class PracticalANNModel:
         self.bIW = bIW
         self.LW = LW
         self.bLW = bLW
+        # rango de entrenamiento original
         self.input_min = np.array([1, 0, -7, 0])
         self.input_max = np.array([300, 41, 25.5, 84])
 
@@ -81,9 +86,8 @@ class PracticalANNModel:
 
     def predict(self, Xreal):
         """
-        Devuelve EMERREL crudo de la red (sin post-procesamiento)
-        y EMERAC crudo (simple cumsum).
-        El post-procesamiento se hace afuera.
+        Devuelve EMERREL cruda de la ANN y EMERAC cruda (cumsum).
+        El post-procesamiento se hace por fuera.
         """
         Xn = self.normalize(Xreal)
         emer = []
@@ -92,9 +96,9 @@ class PracticalANNModel:
             a1 = np.tanh(z1)
             z2 = self.LW @ a1 + self.bLW
             emer.append(np.tanh(z2))
-        emer = (np.array(emer) + 1) / 2           # 0–1 (diario, crudo)
-        emer_ac = np.cumsum(emer)                 # acumulada cruda
-        emerrel = np.diff(emer_ac, prepend=0)     # debería coincidir con emer
+        emer = (np.array(emer) + 1) / 2    # 0–1 (diario, crudo)
+        emer_ac = np.cumsum(emer)          # acumulada cruda
+        emerrel = np.diff(emer_ac, prepend=0)
         return emerrel, emer_ac
 
 @st.cache_resource
@@ -110,17 +114,16 @@ if modelo_ann is None:
     st.stop()
 
 # ===============================================================
-# 🔧 POST-PROCESO EMERGENCIA (suavizado + recorte + normalización)
+# 🔧 POST-PROCESO EMERGENCIA (suavizado + recorte, SIN reescalar a 1)
 # ===============================================================
 def postprocess_emergence(emerrel_raw,
                           smooth=True,
                           window=3,
-                          rescale_to_one=True,
                           clip_zero=True):
     """
     Toma EMERREL cruda de la ANN y devuelve:
-    - emerrel_proc: EMERREL suavizada y consistente
-    - emerac_proc : EMERAC acumulada, monotónica, terminando en 1 (si rescale=True)
+    - emerrel_proc: EMERREL suavizada / recortada
+    - emerac_proc : EMERAC acumulada (no forzada a terminar en 1)
     """
     emer = np.array(emerrel_raw, dtype=float)
 
@@ -139,15 +142,10 @@ def postprocess_emergence(emerrel_raw,
     # 3) EMERAC acumulada
     emerac = np.cumsum(emer)
 
-    # 4) Reescalar para que EMERAC final sea 1
-    if rescale_to_one and emerac[-1] > 0:
-        emerac = emerac / emerac[-1]
-        emer = np.diff(emerac, prepend=0)
-
     return emer, emerac
 
 # ===============================================================
-# 🔧 CARGAR MODELO DE CLUSTERS (SIN PANDAS)
+# 🔧 CARGAR MODELO DE CLUSTERS
 # ===============================================================
 def load_cluster_model():
     local_path = BASE/"modelo_cluster_d25_d50_d75_d95.pkl"
@@ -166,8 +164,8 @@ def load_cluster_model():
     scaler        = data["scaler"]
     model         = data["model"]
     centroides    = data["centroides"]       # numpy (2,4)
-    metricas_hist = data["metricas_hist"]    # dict
-    labels_hist   = data["labels_hist"]      # dict
+    metricas_hist = data.get("metricas_hist", data.get("metricas", {}))
+    labels_hist   = data.get("labels_hist",  data.get("labels", {}))
 
     return scaler, model, metricas_hist, labels_hist, centroides
 
@@ -180,12 +178,16 @@ else:
     scaler_cl, model_cl, metricas_hist, labels_hist, centroides = cluster_pack
 
 # ===============================================================
-# 🔧 FUNCIONES D25–D95
+# 🔧 FUNCIONES D25–D95 (sobre curva truncada)
 # ===============================================================
-def calc_percentiles(dias, emerac):
+def calc_percentiles_trunc(dias, emerac):
+    """
+    Calcula d25–d95 tomando como referencia el máximo disponible
+    (curva potencialmente truncada).
+    """
     if emerac.max() == 0:
         return None
-    y = emerac / emerac.max()
+    y = emerac / emerac.max()   # normaliza respecto a lo emergido hasta la fecha
     d25 = np.interp(0.25, y, dias)
     d50 = np.interp(0.50, y, dias)
     d75 = np.interp(0.75, y, dias)
@@ -219,8 +221,9 @@ def radar_multiseries(values_dict, labels, title):
 
     for name, vals in values_dict.items():
         vals2 = list(vals) + [vals[0]]
-        ax.plot(angles, vals2, lw=2.5, label=name, color=colors[name])
-        ax.fill(angles, vals2, alpha=0.15, color=colors[name])
+        c = colors.get(name, None)
+        ax.plot(angles, vals2, lw=2.5, label=name, color=c)
+        ax.fill(angles, vals2, alpha=0.15, color=c)
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(labels)
@@ -232,15 +235,14 @@ def radar_multiseries(values_dict, labels, title):
 # ===============================================================
 # 🔧 UI PRINCIPAL
 # ===============================================================
-st.title("🌾 PREDWEEM v7.1 — ANN + Clasificación Temprano/Extendido")
+st.title("🌾 PREDWEEM v7.2 — ANN + Clasificación robusta con datos parciales")
 
 # ---- Controles de post-proceso en el sidebar ----
 with st.sidebar:
     st.header("Ajustes de emergencia")
     use_smoothing = st.checkbox("Suavizar EMERREL", value=True)
-    window_size = st.slider("Ventana de suavizado (días)", min_value=1, max_value=9, value=3, step=1)
-    rescale_to_one = st.checkbox("Forzar EMERAC final = 1", value=True)
-    clip_zero = st.checkbox("Recortar negativos a 0", value=True)
+    window_size   = st.slider("Ventana de suavizado (días)", min_value=1, max_value=9, value=3, step=1)
+    clip_zero     = st.checkbox("Recortar negativos a 0", value=True)
 
 fuente = st.radio("Fuente de datos:", [
     "Histórico (meteo_daily.csv)",
@@ -265,7 +267,7 @@ df["Julian_days"] = df["Fecha"].dt.dayofyear
 df = df.sort_values("Fecha")
 
 # ===============================================================
-# 🔧 ANN → EMERREL CRUDA + POST-PROCESO → EMERREL / EMERAC
+# 🔧 ANN → EMERREL cruda + POST-PROCESO
 # ===============================================================
 X = df[["Julian_days", "TMAX", "TMIN", "Prec"]].to_numpy(float)
 emerrel_raw, emerac_raw = modelo_ann.predict(X)
@@ -274,18 +276,70 @@ emerrel, emerac = postprocess_emergence(
     emerrel_raw,
     smooth=use_smoothing,
     window=window_size,
-    rescale_to_one=rescale_to_one,
     clip_zero=clip_zero,
 )
 
 df["EMERREL"] = emerrel
-df["EMERAC"] = emerac
+df["EMERAC"]  = emerac
+
+dias   = df["Julian_days"].to_numpy()
+fechas = df["Fecha"].to_numpy()
 
 # ===============================================================
-# 🔧 PERCENTILES
+# 🔧 GRÁFICOS MOSTRATIVOS EMERREL / EMERAC
 # ===============================================================
-dias = df["Julian_days"].to_numpy()
-res = calc_percentiles(dias, emerac)
+st.subheader("🔍 EMERGENCIA diaria y acumulada — Cruda vs Procesada")
+
+col_er, col_ac = st.columns(2)
+
+with col_er:
+    fig_er, ax_er = plt.subplots(figsize=(5,4))
+    ax_er.plot(dias, emerrel_raw, label="EMERREL cruda (ANN)", color="red", alpha=0.6)
+    ax_er.plot(dias, emerrel,     label="EMERREL procesada",   color="blue", linewidth=2)
+    ax_er.set_xlabel("Día juliano")
+    ax_er.set_ylabel("EMERREL (fracción diaria)")
+    ax_er.set_title("EMERREL: ANN vs post-proceso")
+    ax_er.legend()
+    st.pyplot(fig_er)
+
+with col_ac:
+    fig_ac, ax_ac = plt.subplots(figsize=(5,4))
+    if emerac_raw[-1] > 0:
+        ax_ac.plot(dias, emerac_raw/emerac_raw[-1], label="EMERAC cruda (normalizada)", color="orange", alpha=0.6)
+    else:
+        ax_ac.plot(dias, emerac_raw, label="EMERAC cruda", color="orange", alpha=0.6)
+    if emerac[-1] > 0:
+        ax_ac.plot(dias, emerac/emerac[-1], label="EMERAC procesada (normalizada)", color="green", linewidth=2)
+    else:
+        ax_ac.plot(dias, emerac, label="EMERAC procesada", color="green", linewidth=2)
+    ax_ac.set_xlabel("Día juliano")
+    ax_ac.set_ylabel("EMERAC (0–1 relativo al período)")
+    ax_ac.set_title("EMERAC: ANN vs post-proceso")
+    ax_ac.legend()
+    st.pyplot(fig_ac)
+
+# ===============================================================
+# 🔧 COBERTURA TEMPORAL Y CALIDAD DE INFORMACIÓN
+# ===============================================================
+st.subheader("🗓️ Cobertura temporal de los datos")
+
+JD_START = int(dias.min())
+JD_END   = int(dias.max())
+TEMPORADA_MAX = 274  # 1-ene → 1-oct, aprox. temporada completa
+cobertura = (JD_END - JD_START + 1) / TEMPORADA_MAX
+
+st.write({
+    "Fecha inicio datos": str(df["Fecha"].iloc[0].date()),
+    "Fecha fin datos":    str(df["Fecha"].iloc[-1].date()),
+    "JD inicio": JD_START,
+    "JD fin":    JD_END,
+    "Cobertura relativa de temporada (~1-ene a 1-oct)": f"{cobertura*100:.1f} %",
+})
+
+# ===============================================================
+# 🔧 PERCENTILES SOBRE CURVA TRUNCADA
+# ===============================================================
+res = calc_percentiles_trunc(dias, emerac)
 
 if res is None:
     st.error("No se pudieron calcular percentiles.")
@@ -293,16 +347,16 @@ if res is None:
 
 d25, d50, d75, d95 = res
 
-st.subheader("📌 Percentiles simulados del año (sobre EMERAC post-procesada)")
+st.subheader("📌 Percentiles simulados del año (sobre lo emergido hasta la fecha)")
 st.write({
-    "d25": round(d25, 1),
-    "d50": round(d50, 1),
-    "d75": round(d75, 1),
-    "d95": round(d95, 1)
+    "d25 (del período observado)": round(d25, 1),
+    "d50 (del período observado)": round(d50, 1),
+    "d75 (del período observado)": round(d75, 1),
+    "d95 (del período observado)": round(d95, 1)
 })
 
 # ===============================================================
-# 🔧 CLASIFICACIÓN
+# 🔧 CLASIFICACIÓN + CONFIANZA
 # ===============================================================
 entrada_sc = scaler_cl.transform([[d25, d50, d75, d95]])
 cl = int(model_cl.predict(entrada_sc)[0])
@@ -311,25 +365,25 @@ nombres = {1: "🌱 Temprano / Compacto", 0: "🌾 Extendido / Lento"}
 colors  = {1: "green", 0: "orange"}
 
 st.markdown(f"""
-## 🎯 Patrón del año:
+## 🎯 Patrón del año (basado en datos parciales):
 ### <span style='color:{colors[cl]}; font-size:30px;'>{nombres[cl]}</span>
 """, unsafe_allow_html=True)
 
 # ===============================================================
 # 🔧 CURVAS COMPARATIVAS
 # ===============================================================
-st.subheader("Curva del año vs centroides históricos")
+st.subheader("Curva del año vs centroides históricos (forma normalizada)")
 
 dias_x, curva_x    = curva([d25, d50, d75, d95])
 dias_ext, curva_ext   = curva(centroides[0])
 dias_temp, curva_temp = curva(centroides[1])
 
 fig, ax = plt.subplots(figsize=(9,5))
-ax.plot(dias_x,   curva_x,   lw=3, label="Año evaluado",       color="blue")
-ax.plot(dias_temp, curva_temp, lw=2, label="Centroide Temprano",   color="green")
-ax.plot(dias_ext,  curva_ext,  lw=2, label="Centroide Extendido",  color="orange")
-ax.set_xlabel("Día juliano")
-ax.set_ylabel("EMERAC (0–1)")
+ax.plot(dias_x,   curva_x,   lw=3, label="Año evaluado (parcial)",   color="blue")
+ax.plot(dias_temp, curva_temp, lw=2, label="Centroide Temprano",     color="green")
+ax.plot(dias_ext,  curva_ext,  lw=2, label="Centroide Extendido",    color="orange")
+ax.set_xlabel("Día juliano (escala normalizada)")
+ax.set_ylabel("EMERAC relativa (0–1)")
 ax.legend()
 st.pyplot(fig)
 
@@ -349,20 +403,20 @@ fig_rad = radar_multiseries(
         "Extendido": vals_ext
     },
     labels=["d25", "d50", "d75", "d95"],
-    title="Radar — Año Evaluado vs Temprano vs Extendido"
+    title="Radar — Año Evaluado (parcial) vs Temprano vs Extendido"
 )
 
 st.pyplot(fig_rad)
 
 # ===============================================================
-# 🔧 GRÁFICO DE CERTEZA TEMPORAL DEL PATRÓN + MOMENTO CRÍTICO
+# 🔧 CERTEZA TEMPORAL DEL PATRÓN + MOMENTO CRÍTICO (FECHA REAL)
 # ===============================================================
 st.subheader("📈 Certeza temporal del patrón (día por día)")
 
 probs_temp = []
 probs_ext  = []
-dias_eval  = []       # día juliano
-fechas_eval = []      # fecha real
+dias_eval  = []
+fechas_eval = []
 
 for i in range(5, len(df)):
 
@@ -370,7 +424,7 @@ for i in range(5, len(df)):
     emerac_parc = emerac[:i]
     fechas_parc = df["Fecha"].iloc[:i]
 
-    res_parc = calc_percentiles(dias_parc, emerac_parc)
+    res_parc = calc_percentiles_trunc(dias_parc, emerac_parc)
     if res_parc is None:
         continue
 
@@ -397,8 +451,8 @@ for i in range(5, len(df)):
         prob_temp = w_temp / s
         prob_ext  = w_ext / s
 
-    dias_eval.append(dias_parc[-1])              # día juliano
-    fechas_eval.append(fechas_parc.iloc[-1])     # fecha real
+    dias_eval.append(dias_parc[-1])
+    fechas_eval.append(fechas_parc.iloc[-1])
     probs_temp.append(prob_temp)
     probs_ext.append(prob_ext)
 
@@ -436,7 +490,6 @@ figp, axp = plt.subplots(figsize=(9,5))
 axp.plot(fechas_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.0)
 axp.plot(fechas_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.0)
 
-# Líneas verticales usando fechas reales
 if fecha_crit is not None:
     axp.axvline(fecha_crit, color=color_clase, linestyle="--", linewidth=2,
                 label=f"Momento crítico ({nombre_clase})")
@@ -453,7 +506,9 @@ axp.legend()
 figp.autofmt_xdate()
 st.pyplot(figp)
 
-# ----- Resumen numérico con FECHAS -----
+# ===============================================================
+# 🔧 RESUMEN DE MOMENTO CRÍTICO + CONFIANZA GLOBAL
+# ===============================================================
 st.markdown("### 🧠 Momento crítico de definición del patrón")
 
 if fecha_crit is not None:
@@ -475,30 +530,31 @@ elif fecha_max is not None:
 else:
     st.info("No se pudo calcular la evolución de probabilidad del patrón.")
 
-# ===============================================================
-# 🔧 GRÁFICOS MOSTRATIVOS — EMERREL cruda vs procesada
-# ===============================================================
-st.subheader("🔍 Comparación EMERREL — Cruda vs Procesada")
+# ----- Evaluación de confianza global (ALTA / MEDIA / BAJA) -----
+if prob_max is not None:
+    # Regla heurística combinando cobertura temporal + probabilidad máxima
+    if cobertura >= 0.7 and prob_max >= 0.8:
+        nivel_conf = "ALTA"
+        color_conf = "green"
+    elif cobertura >= 0.4 and prob_max >= 0.65:
+        nivel_conf = "MEDIA"
+        color_conf = "orange"
+    else:
+        nivel_conf = "BAJA"
+        color_conf = "red"
 
-fig_er, ax_er = plt.subplots(figsize=(10,4))
-ax_er.plot(df["Julian_days"], emerrel_raw, label="EMERREL cruda (ANN)", color="red", alpha=0.6)
-ax_er.plot(df["Julian_days"], emerrel,     label="EMERREL procesada", color="blue", linewidth=2)
-ax_er.set_xlabel("Día juliano")
-ax_er.set_ylabel("EMERREL (fracción diaria)")
-ax_er.set_title("EMERREL: salida ANN vs post-proceso")
-ax_er.legend()
-st.pyplot(fig_er)
+    st.markdown(
+        f"### 🔒 Nivel de confianza de la clasificación: "
+        f"<span style='color:{color_conf}; font-size:26px;'>{nivel_conf}</span>",
+        unsafe_allow_html=True
+    )
+    st.write(
+        f"- **Cobertura temporal:** {cobertura*100:.1f} % de la temporada estimada  \n"
+        f"- **Probabilidad máxima del patrón resultante:** {prob_max:.2f}"
+    )
+else:
+    st.info("No se pudo estimar un nivel de confianza para la clasificación.")
 
 # ===============================================================
-# 🔧 GRÁFICOS MOSTRATIVOS — EMERAC cruda vs procesada
+# FIN DEL SCRIPT
 # ===============================================================
-st.subheader("🔍 Comparación EMERAC — Cruda vs Procesada")
-
-fig_ac, ax_ac = plt.subplots(figsize=(10,4))
-ax_ac.plot(df["Julian_days"], emerac_raw/emerac_raw[-1], label="EMERAC cruda (normalizada)", color="orange", alpha=0.6)
-ax_ac.plot(df["Julian_days"], emerac,                    label="EMERAC procesada", color="green", linewidth=2)
-ax_ac.set_xlabel("Día juliano")
-ax_ac.set_ylabel("EMERAC (0–1)")
-ax_ac.set_title("EMERAC: acumulado ANN vs post-proceso")
-ax_ac.legend()
-st.pyplot(fig_ac)
