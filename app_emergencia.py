@@ -1,99 +1,134 @@
 # app_emergencia_v7.py
 # ===============================================================
-# 🌾 PREDWEEM v7 — ANN + Clasificación anticipada Temprano/Extendido
-# ---------------------------------------------------------------
-# - Usa ANN para EMERREL/EMERAC
-# - Usa meteo local + API
-# - Clasifica patrón histórico por d25, d50, d75, d95 simulados
-# - Modelo corregido: modelo_cluster_d25_d50_d75_d95.pkl
+# 🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido
+# - Usa ANN para EMERREL / EMERAC
+# - Carga meteo diario + API pronóstico
+# - Calcula d25/d50/d75/d95 simulados
+# - Clasifica usando modelo_cluster_d25_d50_d75_d95.pkl
 # ===============================================================
 
 import streamlit as st
 import numpy as np
 import pandas as pd
-from pathlib import Path
-import plotly.graph_objects as go
-import requests, time, xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
-import pickle
+import plotly.graph_objects as go
+import pickle, requests, time, xml.etree.ElementTree as ET
+from pathlib import Path
 
 # ===============================================================
-# 🔧 CONFIGURACIÓN STREAMLIT
+# 🔧 CONFIG STREAMLIT
 # ===============================================================
 st.set_page_config(
-    page_title="PREDWEEM v7 – EMERGENCIA + PATRÓN",
-    layout="wide"
+    page_title="PREDWEEM v7 – Emergencia + Patrón",
+    layout="wide",
 )
 
 BASE = Path(__file__).parent if "__file__" in globals() else Path.cwd()
 
 # ===============================================================
-# 🔧 UTILS
+# 🔧 Helpers
 # ===============================================================
-
 def safe(fn, msg):
     try:
         return fn()
-    except Exception as e:
+    except:
         st.error(msg)
         return None
 
 # ===============================================================
-# 🔧 MODELO ANN
+# 🌡 API MeteoBahia (7 días)
 # ===============================================================
+API_URL = "https://meteobahia.com.ar/scripts/forecast/for-ta.xml"
 
+def _to_float(x):
+    try: return float(str(x).replace(",", "."))
+    except: return None
+
+@st.cache_data(ttl=900)
+def fetch_forecast():
+    r = requests.get(API_URL, timeout=30)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+
+    days = root.findall(".//forecast/tabular/day")
+    rows = []
+    for d in days:
+        fecha  = d.find("fecha").get("value")
+        tmax   = d.find("tmax").get("value")
+        tmin   = d.find("tmin").get("value")
+        prec   = d.find("precip").get("value")
+
+        rows.append({
+            "Fecha": pd.to_datetime(fecha),
+            "TMAX": _to_float(tmax),
+            "TMIN": _to_float(tmin),
+            "Prec": _to_float(prec),
+        })
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values("Fecha").head(7)
+    df["Julian_days"] = df["Fecha"].dt.dayofyear
+    return df
+
+# ===============================================================
+# 🔧 ANN Model
+# ===============================================================
 class PracticalANNModel:
     def __init__(self, IW, bIW, LW, bLW):
         self.IW = IW
         self.bIW = bIW
         self.LW = LW
         self.bLW = bLW
-
-        self.input_min = np.array([1, 0, -7, 0])
-        self.input_max = np.array([300, 41, 25.5, 84])
+        self.input_min = np.array([1,0,-7,0])
+        self.input_max = np.array([300,41,25.5,84])
 
     def normalize(self, X):
-        return 2 * (X - self.input_min) / (self.input_max - self.input_min) - 1
+        return 2*(X - self.input_min)/(self.input_max - self.input_min)-1
 
-    def tansig(self, x):
-        return np.tanh(x)
-
-    def forward(self, x):
-        z1 = self.IW.T @ x + self.bIW
-        a1 = self.tansig(z1)
-        z2 = self.LW @ a1 + self.bLW
-        return self.tansig(z2)
-
-    def predict_df(self, X_real):
-        Xn = self.normalize(X_real)
-        emer = np.array([self.forward(x) for x in Xn])
-        emer = (emer + 1) / 2
+    def predict(self, Xreal):
+        Xn = self.normalize(Xreal)
+        emer = []
+        for x in Xn:
+            z1 = self.IW.T @ x + self.bIW
+            a1 = np.tanh(z1)
+            z2 = self.LW @ a1 + self.bLW
+            emer.append(np.tanh(z2))
+        emer = np.array(emer)
+        emer = (emer+1)/2
         emer_ac = np.cumsum(emer)
         emerrel = np.diff(emer_ac, prepend=0)
-
         return emerrel, emer_ac
 
 # ===============================================================
-# 🔧 CARGAR ANN
+# 🔧 Load ANN
 # ===============================================================
-
+@st.cache_resource
 def load_ann():
     IW = np.load(BASE/"IW.npy")
     bIW = np.load(BASE/"bias_IW.npy")
     LW = np.load(BASE/"LW.npy")
     bLW = np.load(BASE/"bias_out.npy")
-    return PracticalANNModel(IW, bIW, LW, bLW)
+    return PracticalANNModel(IW,bIW,LW,bLW)
 
-modelo_ann = safe(lambda: load_ann(), "Error cargando ANN")
+modelo_ann = safe(lambda: load_ann(), "Error al cargar pesos ANN")
 if modelo_ann is None:
     st.stop()
 
 # ===============================================================
-# 🔧 MODELO CLUSTER (NUEVO CORREGIDO)
+# 🔧 Load Cluster Model (robusto)
 # ===============================================================
-
 def load_cluster_model():
-    with open(BASE/"modelo_cluster_d25_d50_d75_d95.pkl", "rb") as f:
+    local_path = BASE/"modelo_cluster_d25_d50_d75_d95.pkl"
+    data_path  = Path("/mnt/data/modelo_cluster_d25_d50_d75_d95.pkl")
+
+    if local_path.exists():
+        path = local_path
+    elif data_path.exists():
+        path = data_path
+    else:
+        raise FileNotFoundError("No se encuentra modelo_cluster_d25_d50_d75_d95.pkl")
+
+    with open(path,"rb") as f:
         data = pickle.load(f)
     return data["scaler"], data["model"], data["metricas"], data["centroides"]
 
@@ -106,22 +141,19 @@ if scaler_cl is None:
     st.stop()
 
 # ===============================================================
-# 🔧 FUNCS DE CLASIFICACIÓN
+# 🔧 Funciones para percentiles d25–d95
 # ===============================================================
-
-def calcular_percentiles(dias, emerac):
-    if emerac.max() == 0:
-        return None
-
-    y = emerac / emerac.max()
+def calc_percentiles(dias, emerac):
+    if emerac.max()==0: return None
+    y = emerac/emerac.max()
     d25 = np.interp(0.25, y, dias)
     d50 = np.interp(0.50, y, dias)
     d75 = np.interp(0.75, y, dias)
     d95 = np.interp(0.95, y, dias)
-    return d25, d50, d75, d95
+    return d25,d50,d75,d95
 
-def curva_centroidal(vals):
-    d25, d50, d75, d95 = vals
+def curva(vals):
+    d25,d50,d75,d95 = vals
     x = np.array([d25,d50,d75,d95])
     y = np.array([0.25,0.50,0.75,0.95])
     dias = np.arange(20,200)
@@ -129,8 +161,7 @@ def curva_centroidal(vals):
     return dias, curva
 
 def radar(vals, labels, title, color):
-    vals = list(vals)
-    vals.append(vals[0])
+    vals = list(vals); vals += vals[:1]
     ang = np.linspace(0,2*np.pi,len(vals))
     fig = plt.figure(figsize=(6,6))
     ax = fig.add_subplot(111, polar=True)
@@ -142,59 +173,52 @@ def radar(vals, labels, title, color):
     return fig
 
 # ===============================================================
-# 🔧 UI – FUENTE DE DATOS
+# 🔧 UI
 # ===============================================================
-st.title("🌾 PREDWEEM v7 — EMERGENCIA + CLASIFICACIÓN DEL PATRÓN")
+st.title("🌾 PREDWEEM v7 — ANN + Clasificación Temprano/Extendido")
 
-fuente = st.radio(
-    "Fuente de datos climáticos",
-    ["Histórico local (meteo_daily.csv)", "Subir archivo"]
-)
+fuente = st.radio("Fuente de datos", ["Histórico (meteo_daily.csv)", "Subir archivo CSV"])
 
-df_meteo = None
+df = None
 
-if fuente == "Histórico local (meteo_daily.csv)":
+if fuente == "Histórico (meteo_daily.csv)":
     if not (BASE/"meteo_daily.csv").exists():
-        st.error("No se encontró meteo_daily.csv")
+        st.error("meteo_daily.csv no encontrado.")
         st.stop()
-    df_meteo = pd.read_csv(BASE/"meteo_daily.csv", parse_dates=["Fecha"])
-
+    df = pd.read_csv(BASE/"meteo_daily.csv", parse_dates=["Fecha"])
 else:
-    up = st.file_uploader("Subí archivo meteo_history.csv", type=["csv"])
-    if up is not None:
-        df_meteo = pd.read_csv(up, parse_dates=["Fecha"])
+    up = st.file_uploader("Subir meteo_history.csv", type=["csv"])
+    if up:
+        df = pd.read_csv(up, parse_dates=["Fecha"])
 
-if df_meteo is None:
+if df is None:
     st.stop()
 
-df_meteo["Julian_days"] = df_meteo["Fecha"].dt.dayofyear
-df_meteo = df_meteo.sort_values("Fecha")
+df["Julian_days"] = df["Fecha"].dt.dayofyear
+df = df.sort_values("Fecha")
 
 # ===============================================================
 # 🔧 ANN → EMERREL / EMERAC
 # ===============================================================
+X = df[["Julian_days","TMAX","TMIN","Prec"]].to_numpy(float)
+emerrel, emerac = modelo_ann.predict(X)
 
-X = df_meteo[["Julian_days","TMAX","TMIN","Prec"]].to_numpy(float)
-
-emerrel, emerac = modelo_ann.predict_df(X)
-
-df_meteo["EMERREL"] = emerrel
-df_meteo["EMERAC"] = emerac
+df["EMERREL"] = emerrel
+df["EMERAC"] = emerac
 
 # ===============================================================
-# 🔧 CLASIFICACIÓN DEL PATRÓN
+# 🔧 CALCULAR d25,d50,d75,d95
 # ===============================================================
-
-dias = df_meteo["Julian_days"].to_numpy()
-res = calcular_percentiles(dias, emerac)
+dias = df["Julian_days"].to_numpy()
+res = calc_percentiles(dias, emerac)
 
 if res is None:
-    st.error("No se pudo calcular percentiles (curva vacía).")
+    st.error("No se pudieron calcular percentiles.")
     st.stop()
 
-d25, d50, d75, d95 = res
+d25,d50,d75,d95 = res
 
-st.subheader("Percentiles simulados:")
+st.subheader("📌 Percentiles simulados")
 st.write({
     "d25": round(d25,1),
     "d50": round(d50,1),
@@ -202,39 +226,37 @@ st.write({
     "d95": round(d95,1)
 })
 
-# CLUSTER
+# ===============================================================
+# 🔧 CLASIFICAR
+# ===============================================================
 entrada = np.array([[d25,d50,d75,d95]])
 entrada_sc = scaler_cl.transform(entrada)
 cl = int(model_cl.predict(entrada_sc)[0])
 
-nombres = {
-    1: "🌱 Temprano / Compacto",
-    0: "🌾 Extendido / Lento"
-}
+nombres = {1:"🌱 Temprano / Compacto", 0:"🌾 Extendido / Lento"}
 colors = {1:"green", 0:"orange"}
 
 st.markdown(f"""
-## 🎯 **Patrón del año (ANN + clima):**  
+## 🎯 Patrón del año:
 ### <span style='color:{colors[cl]}; font-size:30px;'>{nombres[cl]}</span>
 """, unsafe_allow_html=True)
 
 # ===============================================================
-# 🔧 GRAFICAR CURVAS
+# 🔧 CURVA CENTROIDE VS CURVA DEL AÑO
 # ===============================================================
-
 st.subheader("Curva del año vs centroides históricos")
 
-dias_x, curva_x = curva_centroidal([d25,d50,d75,d95])
+dias_x, curva_x = curva([d25,d50,d75,d95])
 
-dias0, curva0 = curva_centroidal(centroides.loc[0].values)
-dias1, curva1 = curva_centroidal(centroides.loc[1].values)
+dias0, curva0 = curva(centroides.loc[0].values)
+dias1, curva1 = curva(centroides.loc[1].values)
 
 fig, ax = plt.subplots(figsize=(9,5))
-ax.plot(dias_x, curva_x, label="Año actual (simulado)", lw=3, color="blue")
-ax.plot(dias1, curva1, label="Centroide Temprano", color="green")
-ax.plot(dias0, curva0, label="Centroide Extendido", color="orange")
+ax.plot(dias_x, curva_x, lw=3, label="Año simulado", color="blue")
+ax.plot(dias1, curva1, lw=2, label="Centroide Temprano", color="green")
+ax.plot(dias0, curva0, lw=2, label="Centroide Extendido", color="orange")
 ax.set_xlabel("Día juliano")
-ax.set_ylabel("Emergencia acumulada (0–1)")
+ax.set_ylabel("EMERAC simulada (0–1)")
 ax.set_title("Comparación del patrón")
 ax.legend()
 st.pyplot(fig)
@@ -242,11 +264,9 @@ st.pyplot(fig)
 # ===============================================================
 # 🔧 RADAR
 # ===============================================================
-
 st.subheader("Radar del patrón del año")
-
-rad = radar([d25,d50,d75,d95], ["d25","d50","d75","d95"], "Radar del año", "blue")
-st.pyplot(rad)
+fig_rad = radar([d25,d50,d75,d95], ["d25","d50","d75","d95"], "Radar", "blue")
+st.pyplot(fig_rad)
 
 # ===============================================================
 # FIN
