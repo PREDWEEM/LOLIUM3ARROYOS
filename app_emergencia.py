@@ -233,6 +233,75 @@ def calcular_metricas_cluster(pred_df: pd.DataFrame) -> dict:
         "TEE90": TEE90,
     }
 
+# ============================================================
+# ==== RADAR TEMPRANO / EXTENDIDO (PLOTLY) PARA STREAMLIT ====
+# ============================================================
+import plotly.graph_objects as go
+import numpy as np
+
+def plot_radar_clusters(metricas_year, means_clusters):
+    """
+    metricas_year: diccionario con d10..TEE90 del año evaluado
+    means_clusters: dict con centroides {0: {...}, 1: {...}}
+    """
+
+    variables = ["d_10","d_25","d_50","d_75","d_90","IC_121","n_picos","TEE90"]
+
+    # Valores del año evaluado
+    sample_vals = np.array([metricas_year[v] for v in variables])
+
+    # Centroides
+    cluster0_vals = np.array([means_clusters[0][v] for v in variables])
+    cluster1_vals = np.array([means_clusters[1][v] for v in variables])
+
+    # Normalización min-max
+    all_vals = np.vstack([sample_vals, cluster0_vals, cluster1_vals])
+    min_vals = all_vals.min(axis=0)
+    max_vals = all_vals.max(axis=0)
+    range_vals = np.where(max_vals - min_vals == 0, 1, max_vals - min_vals)
+
+    sample_norm = (sample_vals - min_vals)/range_vals
+    c0_norm = (cluster0_vals - min_vals)/range_vals
+    c1_norm = (cluster1_vals - min_vals)/range_vals
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatterpolar(
+        r = c0_norm,
+        theta = variables,
+        fill = 'toself',
+        name = 'Cluster Temprano',
+        line=dict(color='orange')
+    ))
+
+    fig.add_trace(go.Scatterpolar(
+        r = c1_norm,
+        theta = variables,
+        fill = 'toself',
+        name = 'Cluster Extendido',
+        line=dict(color='blue')
+    ))
+
+    fig.add_trace(go.Scatterpolar(
+        r = sample_norm,
+        theta = variables,
+        fill = 'toself',
+        name = 'Año Evaluado',
+        line=dict(color='green', dash='dash')
+    ))
+
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=False)),
+        showlegend=True,
+        title="Radar del Patrón: Año Evaluado vs Clusters"
+    )
+
+    return fig
+
+
+
+
+
 # =================== UI ===================
 st.title("PREDICCIÓN EMERGENCIA AGRÍCOLA - LOLIUM sp. TRES ARROYOS")
 
