@@ -361,12 +361,14 @@ st.subheader("📈 Certeza temporal del patrón (día por día)")
 
 probs_temp = []
 probs_ext  = []
-dias_eval  = []
+dias_eval  = []       # día juliano
+fechas_eval = []      # fecha real
 
 for i in range(5, len(df)):
 
     dias_parc   = dias[:i]
     emerac_parc = emerac[:i]
+    fechas_parc = df["Fecha"].iloc[:i]
 
     res_parc = calc_percentiles(dias_parc, emerac_parc)
     if res_parc is None:
@@ -395,7 +397,8 @@ for i in range(5, len(df)):
         prob_temp = w_temp / s
         prob_ext  = w_ext / s
 
-    dias_eval.append(dias_parc[-1])
+    dias_eval.append(dias_parc[-1])              # día juliano
+    fechas_eval.append(fechas_parc.iloc[-1])     # fecha real
     probs_temp.append(prob_temp)
     probs_ext.append(prob_ext)
 
@@ -413,60 +416,61 @@ else:
 UMBRAL = 0.8  # umbral de decisión
 
 idx_crit = next((i for i, p in enumerate(probs_clase) if p >= UMBRAL), None)
-
 idx_max  = int(np.argmax(probs_clase)) if len(probs_clase) > 0 else None
 
-dia_crit = None
-prob_crit = None
+fecha_crit = None
+prob_crit  = None
 if idx_crit is not None:
-    dia_crit  = dias_eval[idx_crit]
-    prob_crit = probs_clase[idx_crit]
+    fecha_crit = fechas_eval[idx_crit]
+    prob_crit  = probs_clase[idx_crit]
 
-dia_max = None
-prob_max = None
+fecha_max = None
+prob_max  = None
 if idx_max is not None:
-    dia_max  = dias_eval[idx_max]
-    prob_max = probs_clase[idx_max]
+    fecha_max = fechas_eval[idx_max]
+    prob_max  = probs_clase[idx_max]
 
-# ----- Gráfico de evolución de probabilidad -----
+# ----- Gráfico con fechas reales -----
 figp, axp = plt.subplots(figsize=(9,5))
-axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.0)
-axp.plot(dias_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.0)
 
-# Líneas verticales para momento crítico y máxima certeza
-if dia_crit is not None:
-    axp.axvline(dia_crit, color=color_clase, linestyle="--", linewidth=2,
+axp.plot(fechas_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.0)
+axp.plot(fechas_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.0)
+
+# Líneas verticales usando fechas reales
+if fecha_crit is not None:
+    axp.axvline(fecha_crit, color=color_clase, linestyle="--", linewidth=2,
                 label=f"Momento crítico ({nombre_clase})")
 
-if dia_max is not None and (dia_crit is None or dia_max != dia_crit):
-    axp.axvline(dia_max, color="blue", linestyle=":", linewidth=2,
-                label="Día de máxima certeza")
+if fecha_max is not None and (fecha_crit is None or fecha_max != fecha_crit):
+    axp.axvline(fecha_max, color="blue", linestyle=":", linewidth=2,
+                label="Fecha máxima certeza")
 
 axp.set_ylim(0,1)
-axp.set_xlabel("Día juliano")
+axp.set_xlabel("Fecha calendario real")
 axp.set_ylabel("Probabilidad")
 axp.set_title("Evolución de la certeza del patrón")
 axp.legend()
+figp.autofmt_xdate()
 st.pyplot(figp)
 
-# ----- Resumen numérico del momento crítico -----
+# ----- Resumen numérico con FECHAS -----
 st.markdown("### 🧠 Momento crítico de definición del patrón")
 
-if dia_crit is not None:
+if fecha_crit is not None:
     st.write(
         f"- **Patrón resultante:** {nombre_clase}  \n"
         f"- **Momento crítico (primer día con prob ≥ {UMBRAL:.0%}):** "
-        f"día juliano **{int(dia_crit)}**  \n"
+        f"**{fecha_crit.strftime('%d-%b')}**  \n"
         f"- **Probabilidad en ese día:** {prob_crit:.2f}  \n"
-        f"- **Día de máxima certeza:** {int(dia_max)} "
+        f"- **Fecha de máxima certeza:** {fecha_max.strftime('%d-%b')} "
         f"(prob = {prob_max:.2f})"
     )
-elif dia_max is not None:
+elif fecha_max is not None:
     st.write(
         f"- **Patrón resultante:** {nombre_clase}  \n"
         f"- No se alcanza el umbral de {UMBRAL:.0%}, "
-        f"pero la máxima certeza se logra en el día juliano "
-        f"**{int(dia_max)}** con probabilidad **{prob_max:.2f}**."
+        f"pero la máxima certeza se logra el "
+        f"**{fecha_max.strftime('%d-%b')}** con probabilidad **{prob_max:.2f}**."
     )
 else:
     st.info("No se pudo calcular la evolución de probabilidad del patrón.")
