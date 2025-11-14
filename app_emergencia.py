@@ -355,7 +355,7 @@ fig_rad = radar_multiseries(
 st.pyplot(fig_rad)
 
 # ===============================================================
-# 🔧 GRÁFICO DE CERTEZA TEMPORAL DEL PATRÓN
+# 🔧 GRÁFICO DE CERTEZA TEMPORAL DEL PATRÓN + MOMENTO CRÍTICO
 # ===============================================================
 st.subheader("📈 Certeza temporal del patrón (día por día)")
 
@@ -399,20 +399,78 @@ for i in range(5, len(df)):
     probs_temp.append(prob_temp)
     probs_ext.append(prob_ext)
 
-figp, axp = plt.subplots(figsize=(9,5))
-axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.5)
-axp.plot(dias_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.5)
+# ----- Determinar patrón resultante (cl ya calculado arriba) -----
+if cl == 1:
+    probs_clase   = probs_temp
+    nombre_clase  = "Temprano / Compacto"
+    color_clase   = "green"
+else:
+    probs_clase   = probs_ext
+    nombre_clase  = "Extendido / Lento"
+    color_clase   = "orange"
 
-axp.set_ylim(0, 1)
+# ----- Momento crítico y máxima certeza -----
+UMBRAL = 0.8  # umbral de decisión
+
+idx_crit = next((i for i, p in enumerate(probs_clase) if p >= UMBRAL), None)
+
+idx_max  = int(np.argmax(probs_clase)) if len(probs_clase) > 0 else None
+
+dia_crit = None
+prob_crit = None
+if idx_crit is not None:
+    dia_crit  = dias_eval[idx_crit]
+    prob_crit = probs_clase[idx_crit]
+
+dia_max = None
+prob_max = None
+if idx_max is not None:
+    dia_max  = dias_eval[idx_max]
+    prob_max = probs_clase[idx_max]
+
+# ----- Gráfico de evolución de probabilidad -----
+figp, axp = plt.subplots(figsize=(9,5))
+axp.plot(dias_eval, probs_temp, label="Probabilidad Temprano",  color="green",  lw=2.0)
+axp.plot(dias_eval, probs_ext,  label="Probabilidad Extendido", color="orange", lw=2.0)
+
+# Líneas verticales para momento crítico y máxima certeza
+if dia_crit is not None:
+    axp.axvline(dia_crit, color=color_clase, linestyle="--", linewidth=2,
+                label=f"Momento crítico ({nombre_clase})")
+
+if dia_max is not None and (dia_crit is None or dia_max != dia_crit):
+    axp.axvline(dia_max, color="blue", linestyle=":", linewidth=2,
+                label="Día de máxima certeza")
+
+axp.set_ylim(0,1)
 axp.set_xlabel("Día juliano")
 axp.set_ylabel("Probabilidad")
 axp.set_title("Evolución de la certeza del patrón")
 axp.legend()
 st.pyplot(figp)
 
-# ===============================================================
-# FIN DEL SCRIPT
-# ===============================================================
+# ----- Resumen numérico del momento crítico -----
+st.markdown("### 🧠 Momento crítico de definición del patrón")
+
+if dia_crit is not None:
+    st.write(
+        f"- **Patrón resultante:** {nombre_clase}  \n"
+        f"- **Momento crítico (primer día con prob ≥ {UMBRAL:.0%}):** "
+        f"día juliano **{int(dia_crit)}**  \n"
+        f"- **Probabilidad en ese día:** {prob_crit:.2f}  \n"
+        f"- **Día de máxima certeza:** {int(dia_max)} "
+        f"(prob = {prob_max:.2f})"
+    )
+elif dia_max is not None:
+    st.write(
+        f"- **Patrón resultante:** {nombre_clase}  \n"
+        f"- No se alcanza el umbral de {UMBRAL:.0%}, "
+        f"pero la máxima certeza se logra en el día juliano "
+        f"**{int(dia_max)}** con probabilidad **{prob_max:.2f}**."
+    )
+else:
+    st.info("No se pudo calcular la evolución de probabilidad del patrón.")
+
 # ===============================================================
 # 🔧 GRÁFICOS MOSTRATIVOS — EMERREL cruda vs procesada
 # ===============================================================
