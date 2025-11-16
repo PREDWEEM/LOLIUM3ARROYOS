@@ -555,4 +555,116 @@ if prob_max is not None:
 else:
     st.info("No se pudo estimar un nivel de confianza para la clasificación.")
 
+# -*- coding: utf-8 -*-
+import streamlit as st
+import pandas as pd
+
+st.set_page_config(
+    page_title="Comparación de Patrones — PREDWEEM",
+    layout="wide"
+)
+
+st.title("🌾 Comparación de Patrones de Emergencia (Temprano vs Tardío)")
+
+# ===============================
+# TABLA FINAL (editable)
+# ===============================
+
+data = {
+    "Rasgo": [
+        "Inicio",
+        "Velocidad",
+        "Concentración",
+        "Fecha 80% EMERAC",
+        "Fecha d95 (fin del proceso)",
+        "Implicancias de manejo"
+    ],
+    "Patrón Temprano": [
+        "Febrero – inicio de marzo",
+        "Muy rápida",
+        "1–2 pulsos concentrados",
+        "Abril",
+        "Fin de abril – inicios de mayo",
+        "Residuales + control temprano (antes del 10 de marzo)"
+    ],
+    "Patrón Tardío / Extendido": [
+        "Mitad de marzo – abril",
+        "Lenta y escalonada",
+        "2–4 pulsos, forma extendida",
+        "Mayo – junio",
+        "Junio – agosto",
+        "Monitoreo prolongado + postemergente tardío"
+    ]
+}
+
+df = pd.DataFrame(data)
+
+st.subheader("📊 Tabla comparativa de patrones de emergencia")
+st.dataframe(df, use_container_width=True)
+
+# ===============================
+# COLOR LABELS POR PATRÓN
+# ===============================
+
+st.markdown("""
+### 🟦🟥 Codificación de patrones utilizada
+
+- **🟦 Tempranos:** 2008, 2012, 2013, 2025  
+- **🟥 Tardíos / Extendidos:** 2009, 2010, 2011, 2014, 2015, 2023, 2024
+
+Esta clasificación proviene del modelo `modelo_cluster_d25_d50_d75_d95.pkl`
+(Cluster 1 = Temprano, Cluster 0 = Tardío).
+""")
+
+# ===============================
+# DESCRIPCIÓN AUTOMÁTICA
+# ===============================
+
+st.subheader("📝 Descripción agronómica sintetizada")
+
+texto = """
+Los **patrones tempranos** muestran una emergencia concentrada entre febrero y abril,
+con más del 80% del total emergido antes del 20 de abril. Estos años suelen requerir
+**control temprano**, idealmente con residuales previos al 10 de marzo, y monitoreo intensivo
+en la primera quincena de marzo.
+
+Los **patrones tardíos y extendidos** desplazan la emergencia hacia abril–junio, con colas
+que pueden prolongarse hasta agosto. Esto obliga a **mantener estrategias de control
+postemergente tardías** y ampliar la ventana de monitoreo hasta finales de otoño.
+"""
+
+st.markdown(texto)
+
+# ===============================
+# DESCARGA DE LA TABLA
+# ===============================
+
+csv = df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="⬇️ Descargar tabla en CSV",
+    data=csv,
+    file_name="comparacion_patrones.csv",
+    mime="text/csv"
+)
+
+st.success("Tabla generada correctamente.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
