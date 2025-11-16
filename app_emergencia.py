@@ -555,20 +555,104 @@ if prob_max is not None:
 else:
     st.info("No se pudo estimar un nivel de confianza para la clasificación.")
 
+
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 
 st.set_page_config(
-    page_title="Comparación de Patrones — PREDWEEM",
+    page_title="Comparación Temprano vs Tardío — PREDWEEM",
     layout="wide"
 )
 
-st.title("🌾 Comparación de Patrones de Emergencia (Temprano vs Tardío)")
+st.title("🌾 Comparación de Patrones — PREDWEEM (EMERAC 0–1 y EMERREL)")
 
-# ===============================
-# TABLA FINAL (editable)
-# ===============================
+# ============================================================
+# CONFIGURACIÓN DE PATRONES Y ARCHIVOS
+# ============================================================
+
+tempranos = ["2008","2012","2013","2025"]
+tardios   = ["2009","2010","2011","2014","2015","2023","2024"]
+
+files = {yr: f"/mnt/data/{yr}.xlsx" for yr in tempranos + tardios}
+
+# ============================================================
+# FUNCIONES
+# ============================================================
+
+def jd_to_date(jd, year=2025):
+    """Convertir día Juliano → fecha calendario."""
+    return datetime(year,1,1) + timedelta(days=int(jd)-1)
+
+def load_data(path):
+    """Carga emergencias y devuelve df con EMERAC y EMERREL."""
+    df = pd.read_excel(path, header=None)
+    df.columns=["jd","emerrel"]
+    df=df.sort_values("jd")
+    df["emerac"]=df["emerrel"].cumsum()
+    total=df["emerac"].iloc[-1]
+
+    df["emerac_rel"] = df["emerac"] / total if total > 0 else 0
+    df["date"] = df["jd"].apply(jd_to_date)
+
+    return df
+
+# ============================================================
+# GRÁFICO EMERAC RELATIVA (0–1) — FECHA CALENDARIO
+# ============================================================
+
+st.subheader("📈 EMERAC Relativa (0–1) — Eje temporal en fecha calendario")
+
+fig1, ax1 = plt.subplots(figsize=(12,6))
+
+for yr in tempranos:
+    df = load_data(files[yr])
+    ax1.plot(df["date"], df["emerac_rel"], color="tab:blue", label=f"{yr} (Temprano)")
+
+for yr in tardios:
+    df = load_data(files[yr])
+    ax1.plot(df["date"], df["emerac_rel"], color="tab:red", label=f"{yr} (Tardío)")
+
+ax1.set_ylim(0,1)
+ax1.set_xlabel("Fecha calendario (2025 como referencia)")
+ax1.set_ylabel("Emergencia acumulada relativa (0–1)")
+ax1.set_title("EMERAC Relativa — Tempranos (Azul) vs Tardíos (Rojo)")
+ax1.grid(True)
+ax1.legend()
+
+st.pyplot(fig1)
+
+# ============================================================
+# GRÁFICO EMERREL (Emergencia diaria)
+# ============================================================
+
+st.subheader("📉 EMERREL — Emergencia Relativa Diaria")
+
+fig2, ax2 = plt.subplots(figsize=(12,6))
+
+for yr in tempranos:
+    df = load_data(files[yr])
+    ax2.plot(df["date"], df["emerrel"], color="tab:blue", label=f"{yr} (Temprano)")
+
+for yr in tardios:
+    df = load_data(files[yr])
+    ax2.plot(df["date"], df["emerrel"], color="tab:red", label=f"{yr} (Tardío)")
+
+ax2.set_xlabel("Fecha calendario (2025 como referencia)")
+ax2.set_ylabel("Emergencia relativa diaria")
+ax2.set_title("EMERREL — Tempranos vs Tardíos")
+ax2.grid(True)
+ax2.legend()
+
+st.pyplot(fig2)
+
+# ============================================================
+# TABLA COMPARATIVA
+# ============================================================
+
+st.subheader("📊 Tabla comparativa de patrones")
 
 data = {
     "Rasgo": [
@@ -597,50 +681,11 @@ data = {
     ]
 }
 
-df = pd.DataFrame(data)
+df_table = pd.DataFrame(data)
+st.dataframe(df_table, use_container_width=True)
 
-st.subheader("📊 Tabla comparativa de patrones de emergencia")
-st.dataframe(df, use_container_width=True)
-
-# ===============================
-# COLOR LABELS POR PATRÓN
-# ===============================
-
-st.markdown("""
-### 🟦🟥 Codificación de patrones utilizada
-
-- **🟦 Tempranos:** 2008, 2012, 2013, 2025  
-- **🟥 Tardíos / Extendidos:** 2009, 2010, 2011, 2014, 2015, 2023, 2024
-
-Esta clasificación proviene del modelo `modelo_cluster_d25_d50_d75_d95.pkl`
-(Cluster 1 = Temprano, Cluster 0 = Tardío).
-""")
-
-# ===============================
-# DESCRIPCIÓN AUTOMÁTICA
-# ===============================
-
-st.subheader("📝 Descripción agronómica sintetizada")
-
-texto = """
-Los **patrones tempranos** muestran una emergencia concentrada entre febrero y abril,
-con más del 80% del total emergido antes del 20 de abril. Estos años suelen requerir
-**control temprano**, idealmente con residuales previos al 10 de marzo, y monitoreo intensivo
-en la primera quincena de marzo.
-
-Los **patrones tardíos y extendidos** desplazan la emergencia hacia abril–junio, con colas
-que pueden prolongarse hasta agosto. Esto obliga a **mantener estrategias de control
-postemergente tardías** y ampliar la ventana de monitoreo hasta finales de otoño.
-"""
-
-st.markdown(texto)
-
-# ===============================
-# DESCARGA DE LA TABLA
-# ===============================
-
-csv = df.to_csv(index=False).encode("utf-8")
-
+# DESCARGA DE TABLA
+csv = df_table.to_csv(index=False).encode("utf-8")
 st.download_button(
     label="⬇️ Descargar tabla en CSV",
     data=csv,
@@ -648,4 +693,29 @@ st.download_button(
     mime="text/csv"
 )
 
-st.success("Tabla generada correctamente.")
+# ============================================================
+# DESCRIPCIÓN AGRONÓMICA
+# ============================================================
+
+st.subheader("📝 Descripción agronómica sintetizada")
+
+descripcion = """
+### 🟦 Patrón Temprano  
+- Emergencia concentrada entre febrero y abril.  
+- Más del 80% antes del 20 de abril.  
+- Requiere **control temprano**, idealmente con residuales previos al 10 de marzo.
+
+### 🟥 Patrón Tardío / Extendido  
+- Emergencia desplazada a abril–junio.  
+- Colas largas (junio–agosto).  
+- Necesita **monitoreo prolongado** y uso de postemergentes tardíos.
+"""
+
+st.markdown(descripcion)
+
+st.success("Gráficos integrados y tabla generada correctamente.")
+
+
+
+
+
