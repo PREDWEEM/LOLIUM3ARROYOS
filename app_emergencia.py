@@ -231,40 +231,110 @@ def radar_multiseries(values_dict, labels, title):
     ax.legend(loc="lower right", bbox_to_anchor=(1.3, 0.1))
 
     return fig
-
 # ===============================================================
 # 🔧 UI PRINCIPAL
 # ===============================================================
-st.title("🌾 PREDWEEM v7.2 — ANN + Clasificación robusta con datos parciales")
+st.title("🌾 PREDWEEM v8.x — ANN + Clasificación robusta con datos parciales")
 
 # ---- Controles de post-proceso en el sidebar ----
 with st.sidebar:
     st.header("Ajustes de emergencia")
     use_smoothing = st.checkbox("Suavizar EMERREL", value=True)
-    window_size   = st.slider("Ventana de suavizado (días)", min_value=1, max_value=9, value=3, step=1)
+    window_size   = st.slider("Ventana de suavizado (días)", 1, 9, 3)
     clip_zero     = st.checkbox("Recortar negativos a 0", value=True)
 
-fuente = st.radio("Fuente de datos:", [
-    "Histórico (meteo_daily.csv)",
-    "Subir archivo CSV"
-])
+st.subheader("📂 Carga de datos meteorológicos")
+
+op_meteo = st.radio(
+    "Fuente de datos meteorológicos:",
+    ["Usar meteo_daily.csv interno", "Subir archivo externo (CSV/XLSX)"]
+)
 
 df = None
-if fuente == "Histórico (meteo_daily.csv)":
-    if not (BASE/"meteo_daily.csv").exists():
-        st.error("No se encontró meteo_daily.csv")
-        st.stop()
-    df = pd.read_csv(BASE/"meteo_daily.csv", parse_dates=["Fecha"])
-else:
-    up = st.file_uploader("Subir meteo_history.csv", type=["csv"])
-    if up:
-        df = pd.read_csv(up, parse_dates=["Fecha"])
 
+# ===============================================================
+# 🚀 OPCIÓN 1 — USAR meteo_daily.csv INTERNO
+# ===============================================================
+if op_meteo == "Usar meteo_daily.csv interno":
+
+    file_path = BASE / "meteo_daily.csv"
+    if not file_path.exists():
+        st.error("❌ No se encontró meteo_daily.csv en el directorio de la app.")
+        st.stop()
+
+    # Este archivo YA contiene Fecha → lectura directa
+    df = pd.read_csv(file_path, parse_dates=["Fecha"])
+    
+    # Asegurar columna JD
+    if "Julian_days" not in df.columns:
+        df["Julian_days"] = df["Fecha"].dt.dayofyear
+        
+    df = df.sort_values("Julian_days")
+
+
+# ===============================================================
+# 🚀 OPCIÓN 2 — SUBIR ARCHIVO METEOROLÓGICO EXTERNO
+#       (formato requerido: JD, Tmin, Tmax, prec)
+# ===============================================================
+else:
+    up = st.file_uploader(
+        "Subir archivo meteorológico externo",
+        type=["csv", "xlsx", "xls"]
+    )
+
+    if up is not None:
+
+        # ---- Lectura flexible según formato ----
+        try:
+            if up.name.lower().endswith(".csv"):
+                df_raw = pd.read_csv(up, dtype=str)
+            else:
+                df_raw = pd.read_excel(up, dtype=str)
+        except Exception as e:
+            st.error(f"❌ Error leyendo el archivo: {e}")
+            st.stop()
+
+        # ---- Normalizar nombres de columnas ----
+        df_raw.columns = [c.strip().lower() for c in df_raw.columns]
+
+        # ---- Validación de columnas requeridas ----
+        required = {"jd", "tmin", "tmax", "prec"}
+        if not required.issubset(df_raw.columns):
+            st.error(f"❌ El archivo debe contener las columnas: {required}")
+            st.stop()
+
+        # ---- Función para convertir coma decimal a punto ----
+        def to_float(x):
+            try:
+                return float(str(x).replace(",", "."))
+            except:
+                return np.nan
+
+        # ---- Construcción del DataFrame estandarizado ----
+        df = pd.DataFrame({
+            "Julian_days": df_raw["jd"].astype(int),
+            "TMIN": df_raw["tmin"].apply(to_float),
+            "TMAX": df_raw["tmax"].apply(to_float),
+            "Prec": df_raw["prec"].apply(to_float)
+        })
+
+        # ---- Generar Fecha a partir de JD ----
+        year_default = pd.Timestamp.today().year
+        df["Fecha"] = pd.to_datetime(df["Julian_days"], format="%j") \
+                        .apply(lambda x: x.replace(year=year_default))
+
+        df = df.sort_values("Julian_days")
+
+# ===============================================================
+# 🚀 VALIDACIÓN FINAL
+# ===============================================================
 if df is None:
+    st.warning("Subí un archivo o seleccioná una fuente para continuar.")
     st.stop()
 
-df["Julian_days"] = df["Fecha"].dt.dayofyear
-df = df.sort_values("Fecha")
+st.success("✅ Datos meteorológicos cargados correctamente.")
+st.dataframe(df.head(), use_container_width=True)
+
 
 # ===============================================================
 # 🔧 ANN → EMERREL cruda + POST-PROCESO
