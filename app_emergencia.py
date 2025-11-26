@@ -244,10 +244,102 @@ with st.sidebar:
     window_size   = st.slider("Ventana de suavizado (días)", min_value=1, max_value=9, value=3, step=1)
     clip_zero     = st.checkbox("Recortar negativos a 0", value=True)
 
-fuente = st.radio("Fuente de datos:", [
-    "Histórico (meteo_daily.csv)",
-    "Subir archivo CSV"
-])
+# ===============================================================
+# 🔧 CARGA DE DATOS METEOROLÓGICOS (unificada)
+# ===============================================================
+st.subheader("📂 Cargar datos meteorológicos")
+
+st.markdown("""
+Formato esperado del archivo meteorológico (como *2015.csv*):
+
+- **JD**: día juliano (1–365)
+- **Tmin**
+- **Tmax**
+- **prec** (precipitación diaria)
+
+El archivo puede ser `.csv` o `.xlsx`.
+""")
+
+op_meteo = st.radio(
+    "Fuente de datos meteorológicos:",
+    ["Usar meteo_daily.csv interno", "Subir archivo externo (CSV/XLSX)"]
+)
+
+df = None
+
+# ----------------------------------------------------------------
+# 🚀 1) Usar archivo interno
+# ----------------------------------------------------------------
+if op_meteo == "Usar meteo_daily.csv interno":
+
+    if not (BASE/"meteo_daily.csv").exists():
+        st.error("No se encontró meteo_daily.csv en el directorio.")
+        st.stop()
+
+    df = pd.read_csv(BASE/"meteo_daily.csv", parse_dates=["Fecha"])
+
+    # si ya trae Fecha → solo asegurar JD
+    if "Julian_days" not in df.columns:
+        df["Julian_days"] = df["Fecha"].dt.dayofyear
+
+
+# ----------------------------------------------------------------
+# 🚀 2) Subir archivo externo (CSV/XLSX)
+# ----------------------------------------------------------------
+else:
+    up = st.file_uploader(
+        "Subir archivo meteorológico externo",
+        type=["csv", "xlsx", "xls"]
+    )
+
+    if up:
+        try:
+            if up.name.lower().endswith(".csv"):
+                df_raw = pd.read_csv(up, dtype=str)
+            else:
+                df_raw = pd.read_excel(up, dtype=str)
+        except Exception as e:
+            st.error(f"Error leyendo el archivo: {e}")
+            st.stop()
+
+        # Normalizar nombres
+        df_raw.columns = [c.strip().lower() for c in df_raw.columns]
+
+        # Verificar columnas mínimas
+        required = {"jd", "tmin", "tmax", "prec"}
+        if not required.issubset(set(df_raw.columns)):
+            st.error(f"El archivo debe contener las columnas: {required}")
+            st.stop()
+
+        # Convertir a numéricos manejando comas decimales
+        def to_float(x):
+            try:
+                return float(str(x).replace(",", "."))
+            except:
+                return np.nan
+
+        df = pd.DataFrame({
+            "Julian_days": df_raw["jd"].astype(int),
+            "TMIN": df_raw["tmin"].apply(to_float),
+            "TMAX": df_raw["tmax"].apply(to_float),
+            "Prec": df_raw["prec"].apply(to_float)
+        })
+
+        # Crear Fecha real → año supuesto = año en curso
+        year_default = pd.Timestamp.today().year
+        df["Fecha"] = pd.to_datetime(df["Julian_days"], format="%j")\
+                           .apply(lambda x: x.replace(year=year_default))
+
+# ----------------------------------------------------------------
+# 🚀 Validación final
+# ----------------------------------------------------------------
+if df is None:
+    st.stop()
+
+df = df.sort_values("Julian_days")
+st.success("Datos meteorológicos cargados correctamente.")
+
+st.dataframe(df.head(), use_container_width=True)
 
 df = None
 if fuente == "Histórico (meteo_daily.csv)":
