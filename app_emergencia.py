@@ -319,6 +319,143 @@ with col_ac:
     st.pyplot(fig_ac)
 
 # ===============================================================
+# 🔧 COMPARACIÓN CON DATOS OBSERVADOS INDEPENDIENTES (EMERREL)
+# ===============================================================
+st.subheader("📂 Comparación con emergencia observada independiente (opcional)")
+
+st.markdown("""
+Podés subir un archivo con **emergencia relativa diaria observada** para 
+compararla con la curva simulada por la ANN.
+
+**Formato esperado (ejemplo 2015.xlsx):**
+- Columna 1: `dia juliano` (entero, 1–365)
+- Columna 2: `emer` (emergencia relativa diaria, fracción 0–1)
+""")
+
+file_obs = st.file_uploader(
+    "Subir archivo de emergencia observada (xlsx/xls/csv)",
+    type=["xlsx", "xls", "csv"],
+    key="file_obs_emergencia"
+)
+
+if file_obs is not None:
+    # ---------- Lectura robusta ----------
+    try:
+        if file_obs.name.lower().endswith((".xlsx", ".xls")):
+            df_obs = pd.read_excel(file_obs)
+        else:
+            df_obs = pd.read_csv(file_obs)
+    except Exception as e:
+        st.error(f"Error leyendo archivo observado: {e}")
+        df_obs = None
+
+    if df_obs is not None:
+        # Normalizar nombres de columnas
+        cols_lower = {c.lower(): c for c in df_obs.columns}
+
+        # Columna JD
+        if "dia juliano" in cols_lower:
+            col_jd = cols_lower["dia juliano"]
+        elif "jd" in cols_lower:
+            col_jd = cols_lower["jd"]
+        else:
+            # Asumir primera columna
+            col_jd = df_obs.columns[0]
+
+        # Columna EMERREL diaria
+        if "emer" in cols_lower:
+            col_emer = cols_lower["emer"]
+        elif "emerrel" in cols_lower:
+            col_emer = cols_lower["emerrel"]
+        else:
+            # Asumir segunda columna
+            if len(df_obs.columns) > 1:
+                col_emer = df_obs.columns[1]
+            else:
+                st.error("No se pudo identificar la columna de emergencia relativa (emer).")
+                col_emer = None
+
+        if col_emer is not None:
+            # ---------- Procesamiento observado ----------
+            df_obs = df_obs[[col_jd, col_emer]].copy()
+            df_obs.columns = ["JD_obs", "EMERREL_obs"]
+
+            # Ordenar por JD por seguridad
+            df_obs = df_obs.sort_values("JD_obs")
+
+            # Recortar negativos y calcular EMERAC observada
+            df_obs["EMERREL_obs"] = df_obs["EMERREL_obs"].astype(float)
+            df_obs["EMERREL_obs"] = df_obs["EMERREL_obs"].clip(lower=0.0)
+            df_obs["EMERAC_obs"]  = df_obs["EMERREL_obs"].cumsum()
+
+            max_obs = df_obs["EMERAC_obs"].max()
+            if max_obs > 0:
+                df_obs["EMERAC_obs_norm"] = df_obs["EMERAC_obs"] / max_obs
+            else:
+                df_obs["EMERAC_obs_norm"] = 0.0
+
+            # ---------- EMERAC simulada normalizada ----------
+            df_sim = df.copy()
+            max_sim = df_sim["EMERAC"].max()
+            if max_sim > 0:
+                df_sim["EMERAC_sim_norm"] = df_sim["EMERAC"] / max_sim
+            else:
+                df_sim["EMERAC_sim_norm"] = 0.0
+
+            # ---------- Emparejar por día juliano ----------
+            merged = pd.merge(
+                df_obs,
+                df_sim[["Julian_days", "EMERAC_sim_norm"]],
+                left_on="JD_obs",
+                right_on="Julian_days",
+                how="inner"
+            )
+
+            if len(merged) < 3:
+                st.warning(
+                    "Muy pocos puntos en común entre la curva observada y la simulada "
+                    "(< 3 días coincidentes). No se calcula RMSE."
+                )
+            else:
+                # ---------- Cálculo de RMSE ----------
+                dif = merged["EMERAC_obs_norm"] - merged["EMERAC_sim_norm"]
+                rmse = float(np.sqrt(np.mean(dif**2)))
+
+                st.markdown("### 📏 Comparación EMERAC normalizada (observada vs simulada)")
+
+                # ---------- Gráfico comparativo ----------
+                fig_cmp, ax_cmp = plt.subplots(figsize=(9, 5))
+                ax_cmp.plot(
+                    merged["JD_obs"],
+                    merged["EMERAC_obs_norm"],
+                    label="EMERAC observada (normalizada)",
+                    linewidth=2.5
+                )
+                ax_cmp.plot(
+                    merged["JD_obs"],
+                    merged["EMERAC_sim_norm"],
+                    label="EMERAC simulada (normalizada)",
+                    linewidth=2.5,
+                    linestyle="--"
+                )
+                ax_cmp.set_xlabel("Día juliano")
+                ax_cmp.set_ylabel("EMERAC normalizada (0–1)")
+                ax_cmp.set_title("Curva observada vs simulada (EMERAC normalizada)")
+                ax_cmp.legend()
+                st.pyplot(fig_cmp)
+
+                st.success(
+                    f"**RMSE entre EMERAC observada y simulada (0–1):** {rmse:.3f}"
+                )
+
+                # Opcional: mostrar tabla resumida
+                with st.expander("Ver datos emparejados (JD, EMERAC obs, EMERAC sim)", expanded=False):
+                    st.dataframe(
+                        merged[["JD_obs", "EMERAC_obs_norm", "EMERAC_sim_norm"]],
+                        use_container_width=True
+                    )
+
+# ===============================================================
 # 🔧 COBERTURA TEMPORAL Y CALIDAD DE INFORMACIÓN
 # ===============================================================
 st.subheader("🗓️ Cobertura temporal de los datos")
