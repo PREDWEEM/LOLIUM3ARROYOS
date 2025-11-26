@@ -271,10 +271,8 @@ if op_meteo == "Usar meteo_daily.csv interno":
         
     df = df.sort_values("Julian_days")
 
-
 # ===============================================================
-# 🚀 OPCIÓN 2 — SUBIR ARCHIVO METEOROLÓGICO EXTERNO
-#       (formato requerido: JD, Tmin, Tmax, prec)
+# 🚀 SUBIR ARCHIVO METEOROLÓGICO EXTERNO (formato flexible)
 # ===============================================================
 else:
     up = st.file_uploader(
@@ -297,13 +295,25 @@ else:
         # ---- Normalizar nombres de columnas ----
         df_raw.columns = [c.strip().lower() for c in df_raw.columns]
 
-        # ---- Validación de columnas requeridas ----
+        # ---- Mapeo flexible (acepta JD o jd o Jd, etc.) ----
+        col_map = {}
+        for c in df_raw.columns:
+            if c in ["jd", "dia_juliano", "julian", "diajuliano"]:
+                col_map["jd"] = c
+            if c in ["tmin", "tempmin", "min", "t_min"]:
+                col_map["tmin"] = c
+            if c in ["tmax", "tempmax", "max", "t_max"]:
+                col_map["tmax"] = c
+            if c in ["prec", "lluvia", "ppt", "rain"]:
+                col_map["prec"] = c
+
         required = {"jd", "tmin", "tmax", "prec"}
-        if not required.issubset(df_raw.columns):
+
+        if not required.issubset(set(col_map.keys())):
             st.error(f"❌ El archivo debe contener las columnas: {required}")
             st.stop()
 
-        # ---- Función para convertir coma decimal a punto ----
+        # ---- Conversión coma→punto ----
         def to_float(x):
             try:
                 return float(str(x).replace(",", "."))
@@ -312,10 +322,10 @@ else:
 
         # ---- Construcción del DataFrame estandarizado ----
         df = pd.DataFrame({
-            "Julian_days": df_raw["jd"].astype(int),
-            "TMIN": df_raw["tmin"].apply(to_float),
-            "TMAX": df_raw["tmax"].apply(to_float),
-            "Prec": df_raw["prec"].apply(to_float)
+            "Julian_days": df_raw[col_map["jd"]].astype(int),
+            "TMIN": df_raw[col_map["tmin"]].apply(to_float),
+            "TMAX": df_raw[col_map["tmax"]].apply(to_float),
+            "Prec": df_raw[col_map["prec"]].apply(to_float)
         })
 
         # ---- Generar Fecha a partir de JD ----
@@ -324,6 +334,7 @@ else:
                         .apply(lambda x: x.replace(year=year_default))
 
         df = df.sort_values("Julian_days")
+
 
 # ===============================================================
 # 🚀 VALIDACIÓN FINAL
