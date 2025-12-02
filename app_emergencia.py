@@ -543,7 +543,7 @@ st.subheader("🗓️ Cobertura temporal de los datos")
 
 JD_START = int(dias.min())
 JD_END   = int(dias.max())
-TEMPORADA_MAX = 241  # 1-ene → 1-sep, aprox. temporada completa
+TEMPORADA_MAX = 250  # 1-ene → 1-sep, aprox. temporada completa
 cobertura = (JD_END - JD_START + 1) / TEMPORADA_MAX
 
 st.write({
