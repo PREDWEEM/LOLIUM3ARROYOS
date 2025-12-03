@@ -473,6 +473,84 @@ elif df["Riesgo_acum"].iloc[-1] < 0.50:
 else:
     st.success("➡️ Riesgo acumulado ALTO: el año está en fase avanzada del proceso.")
 
+# ===============================================================
+# 🎯 DIAGNÓSTICO ANTICIPADO DEL PATRÓN BASADO EN RIESGO ACUMULADO
+# ===============================================================
+st.header("🎯 Diagnóstico anticipado de patrón (Temprano vs Extendido)")
+
+# Selección del valor de riesgo acumulado hasta la fecha actual
+RA = df["Riesgo_acum"].iloc[-1]
+fecha_actual = df["Fecha"].iloc[-1]
+JD_actual = df["Julian_days"].iloc[-1]
+
+st.write(f"**Fecha actual:** {fecha_actual.strftime('%d-%b')} — JD {JD_actual}")
+st.write(f"**Riesgo acumulado al día de hoy:** {RA:.3f}")
+
+# --------------------------------------------
+# Reglas agronómicas para diagnóstico temprano
+# --------------------------------------------
+
+diagnostico = None
+motivo = ""
+
+# 1) Si estamos antes de JD 90 (fines de marzo)
+if JD_actual <= 90:
+    if RA >= 0.30:
+        diagnostico = "Temprano"
+        motivo = "Riesgo temprano alto para esta fecha (RA ≥ 0.30 antes de fin de marzo)."
+    else:
+        diagnostico = "Extendido"
+        motivo = "Riesgo aún bajo para la época (RA < 0.30), indica inicio tardío."
+
+# 2) Entre JD 90 y 120 (abril)
+elif 90 < JD_actual <= 120:
+    if RA >= 0.45:
+        diagnostico = "Temprano"
+        motivo = "Acumulación de riesgo consistente con patrón compacto."
+    elif RA <= 0.25:
+        diagnostico = "Extendido"
+        motivo = "Emergencia lenta, riesgo acumulado muy bajo."
+    else:
+        diagnostico = "Indeterminado"
+        motivo = "Riesgo intermedio: aún no es posible clasificar con certeza."
+
+# 3) Entre JD 120 y 150 (mayo)
+else:
+    if RA >= 0.60:
+        diagnostico = "Temprano"
+        motivo = "Para mayo, RA ≥ 0.60 implica avance acelerado típico del patrón temprano."
+    else:
+        diagnostico = "Extendido"
+        motivo = "Para esta fecha, RA < 0.60 sugiere patrón extendido/lento."
+
+# --------------------------------------------
+# Mostrar resultado
+# --------------------------------------------
+color = {
+    "Temprano": "green",
+    "Extendido": "orange",
+    "Indeterminado": "gray"
+}[diagnostico]
+
+st.markdown(f"""
+### **Diagnóstico anticipado:**
+## <span style='color:{color}; font-size:32px;'>{diagnostico}</span>
+""", unsafe_allow_html=True)
+
+st.write(f"**Motivo:** {motivo}")
+
+# --------------------------------------------
+# Gráfico señalando el punto actual
+# --------------------------------------------
+fig_diag, ax_diag = plt.subplots(figsize=(8,4))
+ax_diag.plot(df["Fecha"], df["Riesgo_acum"], linewidth=3, color="purple")
+ax_diag.scatter(fecha_actual, RA, s=120, color=color, edgecolor="black", zorder=5)
+ax_diag.set_ylim(0, 1)
+ax_diag.set_title("Riesgo acumulado y diagnóstico anticipado")
+ax_diag.set_xlabel("Fecha")
+ax_diag.set_ylabel("Riesgo acumulado (0–1)")
+fig_diag.autofmt_xdate()
+st.pyplot(fig_diag)
 
 
 
