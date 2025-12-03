@@ -381,7 +381,7 @@ else:
 
 # Definición de niveles
 def clasificar_riesgo(r):
-    if r == 0:
+    if r <= 0.10:
         return "Nulo"
     elif r <= 0.33:
         return "Bajo"
@@ -389,6 +389,7 @@ def clasificar_riesgo(r):
         return "Medio"
     else:
         return "Alto"
+
 
 df["Nivel_riesgo"] = df["Riesgo"].apply(clasificar_riesgo)
 
