@@ -383,7 +383,7 @@ else:
 def clasificar_riesgo(r):
     if r <= 0.10:
         return "Nulo"
-    elif r <= 0.30:
+    elif r <= 0.40:
         return "Bajo"
     elif r <= 0.70:
         return "Medio"
