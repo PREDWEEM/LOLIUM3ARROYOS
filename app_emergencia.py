@@ -448,20 +448,6 @@ st.write("Riesgo acumulado normalizado (0–1):")
 st.dataframe(df[["Fecha", "Riesgo", "Riesgo_acum"]], use_container_width=True)
 
 # ---------------------------------------------------------------
-# Gráfico de riesgo acumulado
-# ---------------------------------------------------------------
-fig_ra, ax_ra = plt.subplots(figsize=(8, 4))
-
-ax_ra.plot(df["Fecha"], df["Riesgo_acum"], color="purple", linewidth=3)
-ax_ra.set_ylim(0, 1)
-ax_ra.set_title("Evolución del riesgo acumulado de emergencia")
-ax_ra.set_xlabel("Fecha calendario real")
-ax_ra.set_ylabel("Riesgo acumulado (0–1)")
-fig_ra.autofmt_xdate()
-
-st.pyplot(fig_ra)
-
-# ---------------------------------------------------------------
 # Diagnóstico temprano basado en umbrales
 # ---------------------------------------------------------------
 st.markdown("### 🧠 Diagnóstico temprano (según riesgo acumulado)")
