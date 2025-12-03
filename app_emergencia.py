@@ -381,7 +381,7 @@ else:
 
 # Definición de niveles
 def clasificar_riesgo(r):
-    if r <= 0.20:
+    if r <= 0.15:
         return "Nulo"
     elif r <= 0.40:
         return "Bajo"
