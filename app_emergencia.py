@@ -231,10 +231,11 @@ def radar_multiseries(values_dict, labels, title):
     ax.legend(loc="lower right", bbox_to_anchor=(1.3, 0.1))
 
     return fig
+
 # ===============================================================
 # 🔧 UI PRINCIPAL
 # ===============================================================
-st.title("🌾 PREDWEEM v8.x — ANN + Clasificación robusta con datos parciales")
+st.title("🌾 PREDWEEM v7.2 — ANN + Clasificación robusta con datos parciales")
 
 # ---- Controles de post-proceso en el sidebar ----
 with st.sidebar:
@@ -335,7 +336,6 @@ else:
 
         df = df.sort_values("Julian_days")
 
-
 # ===============================================================
 # 🚀 VALIDACIÓN FINAL
 # ===============================================================
@@ -345,7 +345,6 @@ if df is None:
 
 st.success("✅ Datos meteorológicos cargados correctamente.")
 st.dataframe(df.head(), use_container_width=True)
-
 
 # ===============================================================
 # 🔧 ANN → EMERREL cruda + POST-PROCESO
@@ -773,21 +772,15 @@ if prob_max is not None:
 else:
     st.info("No se pudo estimar un nivel de confianza para la clasificación.")
 
-# -*- coding: utf-8 -*-
-import streamlit as st
-import pandas as pd
-
-st.set_page_config(
-    page_title="Comparación de Patrones — PREDWEEM",
-    layout="wide"
-)
-
-st.title("🌾 Comparación de Patrones de Emergencia (Temprano vs Tardío)")
+# ===============================================================
+# 🔧 MÓDULO EXTRA: COMPARACIÓN SINTÉTICA DE PATRONES
+# ===============================================================
+st.markdown("---")
+st.header("🌾 Comparación sintética de patrones Temprano vs Tardío")
 
 # ===============================
 # TABLA FINAL (editable)
 # ===============================
-
 data = {
     "Rasgo": [
         "Inicio",
@@ -815,15 +808,14 @@ data = {
     ]
 }
 
-df = pd.DataFrame(data)
+df_patrones = pd.DataFrame(data)
 
 st.subheader("📊 Tabla comparativa de patrones de emergencia")
-st.dataframe(df, use_container_width=True)
+st.dataframe(df_patrones, use_container_width=True)
 
 # ===============================
 # COLOR LABELS POR PATRÓN
 # ===============================
-
 st.markdown("""
 ### 🟦🟥 Codificación de patrones utilizada
 
@@ -837,7 +829,6 @@ Esta clasificación proviene del modelo `modelo_cluster_d25_d50_d75_d95.pkl`
 # ===============================
 # DESCRIPCIÓN AUTOMÁTICA
 # ===============================
-
 st.subheader("📝 Descripción agronómica sintetizada")
 
 texto = """
@@ -856,8 +847,7 @@ st.markdown(texto)
 # ===============================
 # DESCARGA DE LA TABLA
 # ===============================
-
-csv = df.to_csv(index=False).encode("utf-8")
+csv = df_patrones.to_csv(index=False).encode("utf-8")
 
 st.download_button(
     label="⬇️ Descargar tabla en CSV",
@@ -866,8 +856,7 @@ st.download_button(
     mime="text/csv"
 )
 
-st.success("Tabla generada correctamente.")
-
+st.success("Tabla de comparación de patrones generada correctamente.")
 
 
 
