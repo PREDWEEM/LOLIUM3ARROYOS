@@ -366,6 +366,44 @@ dias   = df["Julian_days"].to_numpy()
 fechas = df["Fecha"].to_numpy()
 
 # ===============================================================
+# 🔥 MAPA DE RIESGO DIARIO DE EMERGENCIA (0–1)
+# ===============================================================
+
+st.subheader("🔥 Mapa de riesgo diario de emergencia (0–1)")
+
+# Normalización del riesgo diario
+max_emerrel = df["EMERREL"].max()
+
+if max_emerrel > 0:
+    df["Riesgo"] = df["EMERREL"] / max_emerrel
+else:
+    df["Riesgo"] = 0.0
+
+# Mostrar tabla compacta
+st.write("Índice de riesgo diario calculado como EMERREL / max(EMERREL):")
+st.dataframe(df[["Fecha", "EMERREL", "Riesgo"]], use_container_width=True)
+
+# ---------------------------------------------------------------
+# Gráfico tipo mapa de calor temporal (heatmap-like)
+# ---------------------------------------------------------------
+
+fig, ax = plt.subplots(figsize=(10, 1.5))
+
+# Colorbar sobre la fecha
+cmap = plt.cm.get_cmap("inferno")  # o 'viridis', 'plasma'
+norm = plt.Normalize(0, 1)
+
+# Se pinta un rectángulo por cada día
+for i, (f, r) in enumerate(zip(df["Fecha"], df["Riesgo"])):
+    ax.bar(f, 1, color=cmap(norm(r)), width=1)
+
+ax.set_yticks([])
+ax.set_title("Mapa de riesgo diario de emergencia (0 = bajo, 1 = máximo)")
+fig.autofmt_xdate()
+
+st.pyplot(fig)
+
+# ===============================================================
 # 🔧 GRÁFICOS MOSTRATIVOS EMERREL / EMERAC — AHORA EN FECHAS REALES
 # ===============================================================
 st.subheader("🔍 EMERGENCIA diaria y acumulada — Cruda vs Procesada (Fecha real)")
