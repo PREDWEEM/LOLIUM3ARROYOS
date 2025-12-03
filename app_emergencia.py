@@ -426,6 +426,59 @@ st.pyplot(fig)
 st.write("Tabla de niveles de riesgo por día:")
 st.dataframe(df[["Fecha", "EMERREL", "Riesgo", "Nivel_riesgo"]], use_container_width=True)
 
+
+# ===============================================================
+# 📈 RIESGO ACUMULADO DE EMERGENCIA (diagnóstico temprano)
+# ===============================================================
+st.subheader("📈 Riesgo acumulado de emergencia (diagnóstico temprano)")
+
+# Cálculo del riesgo acumulado
+df["Riesgo_acum_raw"] = df["Riesgo"].cumsum()
+
+# Normalizar a 0–1
+max_acum = df["Riesgo_acum_raw"].max()
+if max_acum > 0:
+    df["Riesgo_acum"] = df["Riesgo_acum_raw"] / max_acum
+else:
+    df["Riesgo_acum"] = 0.0
+
+# Mostrar tabla
+st.write("Riesgo acumulado normalizado (0–1):")
+st.dataframe(df[["Fecha", "Riesgo", "Riesgo_acum"]], use_container_width=True)
+
+# ---------------------------------------------------------------
+# Gráfico de riesgo acumulado
+# ---------------------------------------------------------------
+fig_ra, ax_ra = plt.subplots(figsize=(8, 4))
+
+ax_ra.plot(df["Fecha"], df["Riesgo_acum"], color="purple", linewidth=3)
+ax_ra.set_ylim(0, 1)
+ax_ra.set_title("Evolución del riesgo acumulado de emergencia")
+ax_ra.set_xlabel("Fecha calendario real")
+ax_ra.set_ylabel("Riesgo acumulado (0–1)")
+fig_ra.autofmt_xdate()
+
+st.pyplot(fig_ra)
+
+# ---------------------------------------------------------------
+# Diagnóstico temprano basado en umbrales
+# ---------------------------------------------------------------
+st.markdown("### 🧠 Diagnóstico temprano (según riesgo acumulado)")
+
+# Definición interpretativa (puede ajustarse)
+if df["Riesgo_acum"].iloc[-1] < 0.20:
+    st.info("➡️ Riesgo acumulado BAJO: el proceso de emergencia está muy atrasado.")
+elif df["Riesgo_acum"].iloc[-1] < 0.50:
+    st.warning("➡️ Riesgo acumulado MEDIO: emergencia en progreso, monitoreo activo.")
+else:
+    st.success("➡️ Riesgo acumulado ALTO: el año está en fase avanzada del proceso.")
+
+
+
+
+
+
+
 # ===============================================================
 # 🔧 GRÁFICOS MOSTRATIVOS EMERREL / EMERAC — AHORA EN FECHAS REALES
 # ===============================================================
