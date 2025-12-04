@@ -493,6 +493,84 @@ with st.expander("📋 Tabla detallada de riesgo diario"):
     )
 
 
+# ===============================================================
+# 🎬 ANIMACIÓN DEL RIESGO DE EMERGENCIA DÍA A DÍA
+# ===============================================================
+import plotly.express as px
+import plotly.graph_objects as go
+
+st.subheader("🎬 Animación temporal del riesgo de emergencia (día por día)")
+
+# ---------------------------------------------------------------
+# 🛡 Validación
+# ---------------------------------------------------------------
+if "Riesgo" not in df.columns:
+    st.error("No existe la columna Riesgo. Asegurate de ejecutar el cálculo previo.")
+    st.stop()
+
+# Preparación del DataFrame para animación
+df_anim = df.copy()
+df_anim["Fecha_str"] = df_anim["Fecha"].dt.strftime("%d-%b")
+
+# ---------------------------------------------------------------
+# 🎨 Selector de paleta de colores
+# ---------------------------------------------------------------
+with st.sidebar:
+    cmap_anim = st.selectbox(
+        "Mapa de colores para la animación",
+        ["viridis", "plasma", "cividis", "turbo", "magma", "inferno", "icefire", "rdbu"],
+        index=0,
+        key="anim_cmap"
+    )
+
+# ---------------------------------------------------------------
+# 🎬 Gráfico animado
+# ---------------------------------------------------------------
+fig_anim = px.scatter(
+    df_anim,
+    x="Fecha",
+    y="Riesgo",
+    animation_frame="Fecha_str",
+    range_y=[0, 1],
+    color="Riesgo",
+    color_continuous_scale=cmap_anim,
+    size=[12]*len(df_anim),   # puntos uniformes
+    hover_data={"Fecha_str": True, "Riesgo": ":.2f"},
+    labels={"Fecha": "Fecha calendario", "Riesgo": "Riesgo de emergencia (0–1)"}
+)
+
+# Línea base de riesgo completo
+fig_anim.add_trace(
+    go.Scatter(
+        x=df_anim["Fecha"],
+        y=df_anim["Riesgo"],
+        mode="lines",
+        line=dict(color="gray", width=1.5),
+        name="Riesgo acumulado"
+    )
+)
+
+# Mejora estética
+fig_anim.update_layout(
+    title="Evolución diaria del riesgo de emergencia",
+    height=450,
+    margin=dict(l=20, r=20, t=50, b=20),
+)
+
+# ---------------------------------------------------------------
+# Controlar velocidad de animación
+# ---------------------------------------------------------------
+fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 300  # 300 ms entre frames
+
+# Mostrar animación
+st.plotly_chart(fig_anim, use_container_width=True)
+
+
+
+
+
+
+
 
 
 
