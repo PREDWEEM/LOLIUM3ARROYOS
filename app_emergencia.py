@@ -365,8 +365,9 @@ df["EMERAC"]  = emerac
 dias   = df["Julian_days"].to_numpy()
 fechas = df["Fecha"].to_numpy()
 
+
 # ===============================================================
-# 🔥 MAPA DE RIESGO — VERSIÓN MODERNA E INTERACTIVA (PLOTLY)
+# 🔥 MAPA DE RIESGO — VERSIÓN MODERNA E INTERACTIVA (SEGURO)
 # ===============================================================
 import plotly.express as px
 import plotly.graph_objects as go
@@ -374,7 +375,54 @@ import plotly.graph_objects as go
 st.subheader("🔥 Mapa moderno e interactivo de riesgo de emergencia")
 
 # ---------------------------------------------------------------
-# 🟦 Sidebar: Opciones de visualización
+# 🛡️ Validación: asegurar que EMERREL está disponible
+# ---------------------------------------------------------------
+if "EMERREL" not in df.columns:
+    st.error("No se encontró la columna EMERREL. Asegurate de ejecutar la ANN antes del mapa de riesgo.")
+    st.stop()
+
+# ---------------------------------------------------------------
+# 🛡️ Crear columna Riesgo si no existe
+# ---------------------------------------------------------------
+if "Riesgo" not in df.columns:
+    max_emerrel = df["EMERREL"].max()
+    if max_emerrel > 0:
+        df["Riesgo"] = df["EMERREL"] / max_emerrel
+    else:
+        df["Riesgo"] = 0.0
+
+# ---------------------------------------------------------------
+# 🛡️ Crear columna Nivel_riesgo si no existe
+# ---------------------------------------------------------------
+if "Nivel_riesgo" not in df.columns:
+    def clasificar_riesgo(r):
+        if r <= 0.10:
+            return "Nulo"
+        elif r <= 0.33:
+            return "Bajo"
+        elif r <= 0.66:
+            return "Medio"
+        else:
+            return "Alto"
+    df["Nivel_riesgo"] = df["Riesgo"].apply(clasificar_riesgo)
+
+# ---------------------------------------------------------------
+# Copia segura para el gráfico
+# ---------------------------------------------------------------
+df_risk = df.copy()
+df_risk["Fecha_str"] = df_risk["Fecha"].dt.strftime("%d-%b")
+
+# Día con riesgo máximo — protegido
+if df_risk["Riesgo"].max() > 0:
+    idx_max_riesgo = df_risk["Riesgo"].idxmax()
+    fecha_max_riesgo = df_risk.loc[idx_max_riesgo, "Fecha"]
+    valor_max_riesgo = df_risk.loc[idx_max_riesgo, "Riesgo"]
+else:
+    fecha_max_riesgo = None
+    valor_max_riesgo = None
+
+# ---------------------------------------------------------------
+# 🟦 Sidebar visual
 # ---------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🎨 Estilo del mapa de riesgo")
@@ -390,21 +438,9 @@ with st.sidebar:
     )
 
 # ---------------------------------------------------------------
-# Preprocesamiento para gráfico
-# ---------------------------------------------------------------
-df_risk = df.copy()
-df_risk["Fecha_str"] = df_risk["Fecha"].dt.strftime("%d-%b")
-
-# Día con riesgo máximo
-idx_max_riesgo = df_risk["Riesgo"].idxmax()
-fecha_max_riesgo = df_risk.loc[idx_max_riesgo, "Fecha"]
-valor_max_riesgo = df_risk.loc[idx_max_riesgo, "Riesgo"]
-
-# ---------------------------------------------------------------
-# 🔥 Generación del gráfico interactivo
+# 🔥 Generación del gráfico
 # ---------------------------------------------------------------
 if tipo_barra == "Rectángulo suave (recomendado)":
-    # Usamos un heatmap horizontal elegante
     fig = go.Figure(
         data=go.Heatmap(
             z=[df_risk["Riesgo"].values],
@@ -419,7 +455,6 @@ if tipo_barra == "Rectángulo suave (recomendado)":
     fig.update_yaxes(showticklabels=False)
 
 else:
-    # Barras verticales finas estilo timeline
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
@@ -429,35 +464,37 @@ else:
             hovertemplate="<b>%{x|%d-%b}</b><br>Riesgo: %{y:.2f}<extra></extra>",
         )
     )
-    fig.update_yaxes(range=[0,1], title="Riesgo")
+    fig.update_yaxes(range=[0, 1], title="Riesgo")
 
 # ---------------------------------------------------------------
-# ⭐ Anotación: día de máximo riesgo
+# ⭐ Anotación segura
 # ---------------------------------------------------------------
-fig.add_annotation(
-    x=fecha_max_riesgo,
-    y=1.05 if tipo_barra != "Rectángulo suave (recomendado)" else 0.6,
-    text=f"⬆ Máximo riesgo ({valor_max_riesgo:.2f})",
-    showarrow=False,
-    font=dict(size=12, color="red")
-)
+if fecha_max_riesgo is not None:
+    fig.add_annotation(
+        x=fecha_max_riesgo,
+        y=1.05 if tipo_barra != "Rectángulo suave (recomendado)" else 0.6,
+        text=f"⬆ Máximo riesgo ({valor_max_riesgo:.2f})",
+        showarrow=False,
+        font=dict(size=12, color="red")
+    )
 
 fig.update_layout(
-    height=220,
+    height=250,
     margin=dict(l=30, r=30, t=40, b=20),
     title="Mapa interactivo de riesgo diario de emergencia (0–1)",
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------------
-# Tabla moderna (opcional)
-# ---------------------------------------------------------------
 with st.expander("📋 Tabla detallada de riesgo diario"):
     st.dataframe(
         df_risk[["Fecha", "EMERREL", "Riesgo", "Nivel_riesgo"]],
         use_container_width=True
     )
+
+
+
+
 
 # ===============================================================
 # 📈 RIESGO ACUMULADO DE EMERGENCIA (diagnóstico temprano)
