@@ -550,21 +550,22 @@ cluster_pred = int(np.argmin(dist_vector))
 # ---------------------------------------------------------------
 cluster_names = {
     0: "🌾 Intermedio / Bimodal",
-    1: "🍂 Tardío / Extendido",
-    2: "🌱 Temprano / Compacto"
+    1: "🌱 Temprano / Compacto",
+    2: "🍂 Tardío / Extendido"
 }
 
 cluster_colors = {
     0: "blue",
-    1: "orange",
-    2: "green"
+    1: "green",     # temprano
+    2: "orange"     # tardío
 }
 
 cluster_desc = {
-    0: "Patrón mixto con dos pulsos: uno temprano débil y uno otoñal fuerte.",
-    1: "Patrón tardío/extenso, riesgo prolongado abril–junio.",
-    2: "Patrón temprano/compacto con emergencia concentrada feb–abr."
+    0: "Patrón mixto con dos pulsos bien diferenciados: uno temprano moderado y uno otoñal fuerte.",
+    1: "Patrón temprano y muy concentrado, con emergencia dominante en feb–mar y pico marcado antes de abril.",
+    2: "Patrón tardío/extenso con emergencia sostenida abril–junio y fuerte cola otoñal."
 }
+
 
 # ---------------------------------------------------------------
 # MOSTRAR RESULTADO
