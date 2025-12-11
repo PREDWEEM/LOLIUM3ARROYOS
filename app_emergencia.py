@@ -398,44 +398,6 @@ fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 300
 
 st.plotly_chart(fig_anim, use_container_width=True)
 
-# ===============================================================
-# 🔍 GRÁFICOS EMERREL y EMERAC (Fecha real)
-# ===============================================================
-st.subheader("🔍 EMERGENCIA diaria y acumulada — ANN vs post-proceso")
-
-col_er, col_ac = st.columns(2)
-
-with col_er:
-    fig_er, ax_er = plt.subplots(figsize=(5,4))
-    ax_er.plot(fechas, emerrel_raw, label="EMERREL cruda (ANN)", color="red", alpha=0.6)
-    ax_er.plot(fechas, emerrel,     label="EMERREL procesada",   color="blue", linewidth=2)
-
-    ax_er.set_xlabel("Fecha")
-    ax_er.set_ylabel("EMERREL")
-    ax_er.set_title("EMERREL — ANN vs procesada")
-    ax_er.legend()
-    fig_er.autofmt_xdate()
-    st.pyplot(fig_er)
-
-with col_ac:
-    fig_ac, ax_ac = plt.subplots(figsize=(5,4))
-
-    if emerac_raw[-1] > 0:
-        ax_ac.plot(fechas, emerac_raw/emerac_raw[-1], label="EMERAC cruda (norm)", color="orange", alpha=0.6)
-    else:
-        ax_ac.plot(fechas, emerac_raw,                 label="EMERAC cruda", color="orange", alpha=0.6)
-
-    if emerac[-1] > 0:
-        ax_ac.plot(fechas, emerac/emerac[-1], label="EMERAC procesada (norm)", color="green", linewidth=2)
-    else:
-        ax_ac.plot(fechas, emerac,             label="EMERAC procesada", color="green", linewidth=2)
-
-    ax_ac.set_xlabel("Fecha")
-    ax_ac.set_ylabel("EMERAC (0–1)")
-    ax_ac.set_title("EMERAC — ANN vs procesada")
-    ax_ac.legend()
-    fig_ac.autofmt_xdate()
-    st.pyplot(fig_ac)
 
 # ===============================================================
 # 🔥 CLASIFICADOR FUNCIONAL K=3 (DTW + K-Medoids)
