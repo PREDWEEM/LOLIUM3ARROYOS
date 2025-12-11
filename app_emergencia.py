@@ -578,6 +578,122 @@ st.markdown(f"""
 
 st.info(cluster_desc[cluster_pred])
 
+# ===============================================================
+# 🔧 Función robusta para convertir fechas de cualquier tipo
+# ===============================================================
+def safe_to_date(x):
+    """
+    Convierte numpy.datetime64, datetime, Timestamp, día juliano (int/float),
+    string o None a una fecha legible. Nunca lanza excepción.
+    """
+    if x is None:
+        return "No definido"
+
+    # Intento 1 → conversión directa
+    try:
+        return str(pd.to_datetime(x).date())
+    except:
+        pass
+
+    # Intento 2 → interpretar como día juliano
+    try:
+        jd = int(x)
+        year = pd.Timestamp.today().year
+        fecha = pd.to_datetime(f"{jd}", format="%j").replace(year=year)
+        return str(fecha.date())
+    except:
+        pass
+
+    return str(x)
+
+
+# ===============================================================
+# 🔧 Cálculo del pico de emergencia
+# ===============================================================
+peak = emerrel.max() if len(emerrel) > 0 else 0
+
+if len(emerrel) > 0:
+    idx_peak = int(np.argmax(emerrel))
+    dia_peak = fechas[idx_peak]   # fecha real en lugar de JD
+else:
+    dia_peak = None
+
+fecha_pico_segura = safe_to_date(dia_peak)
+
+
+# ===============================================================
+# 📝 RESUMEN DEL DIAGNÓSTICO (CLASIFICACIÓN K=3)
+# ===============================================================
+resumen_diagnostico = {
+    "Patrón asignado": cluster_names[cluster_pred],
+    "Cluster ID": int(cluster_pred),
+    "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
+    "Momento crítico": safe_to_date(fecha_crit),
+    "Fecha del pico": fecha_pico_segura,
+}
+
+st.subheader("📋 Resumen del diagnóstico funcional")
+st.write(resumen_diagnostico)
+
+
+# ===============================================================
+# 🔍 Análisis fino de intensidad de emergencia
+# ===============================================================
+st.subheader("🔍 Evaluación fina de intensidad emergente")
+
+if emerrel.sum() > 0:
+    frac_tardia   = emerrel[dias > 120].sum() / emerrel.sum()
+    frac_temprana = emerrel[dias < 90].sum() / emerrel.sum()
+else:
+    frac_tardia = 0
+    frac_temprana = 0
+
+st.write({
+    "Pico máximo (EMERREL)": float(peak),
+    "Fecha del pico": fecha_pico_segura,
+    "Proporción temprana (< JD 90)": round(frac_temprana, 3),
+    "Proporción tardía (> JD 120)": round(frac_tardia, 3),
+})
+
+
+# ===============================================================
+# 🤖 INTERPRETACIÓN AUTOMÁTICA DEL PATRÓN
+# ===============================================================
+st.subheader("🧠 Interpretación agronómica del patrón K=3")
+
+if cluster_pred == 2:
+    # Temprano / Compacto
+    if frac_temprana > 0.60:
+        st.success("🌱 **Año muy temprano**, con >60% de emergencia en la primera ventana crítica.")
+    else:
+        st.warning("🌱 Año temprano, pero con una distribución algo más extendida de lo normal.")
+
+elif cluster_pred == 1:
+    # Tardío / Extendido
+    if frac_tardia > 0.40:
+        st.error("🍂 **Año altamente tardío**, con fuerte concentración de emergencia hacia invierno.")
+    else:
+        st.warning("🍂 Año tardío, pero con menor extensión que otros casos históricos.")
+
+elif cluster_pred == 0:
+    # Intermedio / Bimodal
+    if frac_temprana > 0.40 and frac_tardia > 0.25:
+        st.info("🌾 **Año bimodal clásico**, con pulsos temprano y tardío bien marcados.")
+    else:
+        st.info("🌾 Patrón intermedio, con menor dominancia de uno de los pulsos.")
+
+
+# ===============================================================
+# 🚀 FIN DEL MÓDULO
+# ===============================================================
+st.markdown("---")
+st.markdown("""
+### ✔ Diagnóstico funcional completado  
+Integración completa del clasificador **K=3 (DTW + K-Medoids)**  
++ análisis de emergencia + interpretación agronómica automática  
+""")
+
+
 # ---------------------------------------------------------------
 # GRÁFICO — Curva del año vs SU medoide
 # ---------------------------------------------------------------
