@@ -678,9 +678,7 @@ Este patrón representa los años de **mayor riesgo inicial** para la competenci
 - Casi nula emergencia posterior a abril.
 - Relación fuerte con:
   - precipitaciones de verano,
-  - suelos con buena humedad superficial (post-nap),
-  - temperaturas estables y templadas en febrero.
-
+  
 #### 🎯 Implicancias para el manejo
 - **La ventana crítica ocurre muy temprano**, por lo que:
   - Los **herbicidas residuales pre-siembra o pre-emergentes** deben estar activos desde fines de febrero.
@@ -708,8 +706,6 @@ Es el patrón **más complejo** desde el manejo debido a su dualidad.
 - Alta variabilidad interanual dentro del grupo.
 - Asociado a:
   - alternancia de ciclos húmedo–seco,
-  - temperaturas otoñales erráticas,
-  - rearme de humedad superficial tardío.
 
 #### 🎯 Implicancias para el manejo
 - Requiere **doble estrategia**:
