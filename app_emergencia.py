@@ -1,4 +1,3 @@
-
 # ===============================================================
 # 🌾 PREDWEEM vK3 — ANN + Clasificador funcional K=3 (DTW K-Medoids)
 # Versión completa con riesgo, animación, comparación observada
@@ -10,6 +9,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import pickle, requests, xml.etree.ElementTree as ET
+import plotly.express as px
+import plotly.graph_objects as go
 
 # ---------------------------------------------------------------
 # CONFIG STREAMLIT
@@ -264,14 +265,8 @@ fechas = df["Fecha"].to_numpy()
 # ===============================================================
 # 🔥 MAPA DE RIESGO — MODERNO E INTERACTIVO
 # ===============================================================
-import plotly.express as px
-import plotly.graph_objects as go
-
 st.subheader("🔥 Mapa moderno e interactivo de riesgo de emergencia")
 
-# ---------------------------------------------------------------
-# Cálculo del riesgo (0–1 normalizado)
-# ---------------------------------------------------------------
 if "Riesgo" not in df.columns:
     max_emerrel = df["EMERREL"].max()
     if max_emerrel > 0:
@@ -279,9 +274,6 @@ if "Riesgo" not in df.columns:
     else:
         df["Riesgo"] = 0.0
 
-# ---------------------------------------------------------------
-# Clasificación del nivel de riesgo
-# ---------------------------------------------------------------
 if "Nivel_riesgo" not in df.columns:
 
     def clasificar_riesgo(r):
@@ -292,13 +284,9 @@ if "Nivel_riesgo" not in df.columns:
 
     df["Nivel_riesgo"] = df["Riesgo"].apply(clasificar_riesgo)
 
-# ---------------------------------------------------------------
-# Preparación del dataframe
-# ---------------------------------------------------------------
 df_risk = df.copy()
 df_risk["Fecha_str"] = df_risk["Fecha"].dt.strftime("%d-%b")
 
-# Día de riesgo máximo
 if df_risk["Riesgo"].max() > 0:
     idx_max_riesgo = df_risk["Riesgo"].idxmax()
     fecha_max_riesgo = df_risk.loc[idx_max_riesgo, "Fecha"]
@@ -307,9 +295,6 @@ else:
     fecha_max_riesgo = None
     valor_max_riesgo = None
 
-# ---------------------------------------------------------------
-# Opciones visuales en sidebar
-# ---------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🎨 Estilo del mapa de riesgo")
     cmap = st.selectbox(
@@ -323,9 +308,6 @@ with st.sidebar:
         index=0
     )
 
-# ---------------------------------------------------------------
-# Construcción del gráfico
-# ---------------------------------------------------------------
 if tipo_barra == "Rectángulo suave (recomendado)":
     fig = go.Figure(
         data=go.Heatmap(
@@ -339,7 +321,6 @@ if tipo_barra == "Rectángulo suave (recomendado)":
         )
     )
     fig.update_yaxes(showticklabels=False)
-
 else:
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -350,7 +331,6 @@ else:
     ))
     fig.update_yaxes(range=[0,1], title="Riesgo")
 
-# Anotación del máximo
 if fecha_max_riesgo is not None:
     fig.add_annotation(
         x=fecha_max_riesgo,
@@ -373,7 +353,6 @@ with st.expander("📋 Tabla detallada de riesgo"):
         df_risk[["Fecha","EMERREL","Riesgo","Nivel_riesgo"]],
         use_container_width=True
     )
-
 
 # ===============================================================
 # 🎬 ANIMACIÓN TEMPORAL DEL RIESGO
@@ -403,7 +382,6 @@ fig_anim = px.scatter(
     labels={"Fecha":"Fecha","Riesgo":"Riesgo (0–1)"}
 )
 
-# Línea base
 fig_anim.add_trace(go.Scatter(
     x=df_anim["Fecha"],
     y=df_anim["Riesgo"],
@@ -416,11 +394,9 @@ fig_anim.update_layout(
     height=450
 )
 
-# Velocidad animación
 fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 300
 
 st.plotly_chart(fig_anim, use_container_width=True)
-
 
 # ===============================================================
 # 🔍 GRÁFICOS EMERREL y EMERAC (Fecha real)
@@ -429,9 +405,6 @@ st.subheader("🔍 EMERGENCIA diaria y acumulada — ANN vs post-proceso")
 
 col_er, col_ac = st.columns(2)
 
-# -----------------------------
-# EMERREL
-# -----------------------------
 with col_er:
     fig_er, ax_er = plt.subplots(figsize=(5,4))
     ax_er.plot(fechas, emerrel_raw, label="EMERREL cruda (ANN)", color="red", alpha=0.6)
@@ -444,9 +417,6 @@ with col_er:
     fig_er.autofmt_xdate()
     st.pyplot(fig_er)
 
-# -----------------------------
-# EMERAC
-# -----------------------------
 with col_ac:
     fig_ac, ax_ac = plt.subplots(figsize=(5,4))
 
@@ -470,12 +440,8 @@ with col_ac:
 # ===============================================================
 # 🔥 CLASIFICADOR FUNCIONAL K=3 (DTW + K-Medoids)
 # ===============================================================
-
 st.header("🌾 Clasificación funcional K=3 basada en curvas EMERREL (DTW)")
 
-# ---------------------------------------------------------------
-# Cargar el archivo modelo_clusters_k3.pkl desde BASE
-# ---------------------------------------------------------------
 cluster_path = BASE/"modelo_clusters_k3.pkl"
 
 if not cluster_path.exists():
@@ -493,12 +459,9 @@ JD_COMMON       = np.array(cluster_model["JD_common"])
 curves_interp   = np.array(cluster_model["curves_interp"])   # matriz (N, T)
 
 # ===============================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES K=3
 # ===============================================================
 def dtw_distance(a, b):
-    """
-    DTW simple para comparar la forma de dos curvas 1D.
-    """
     na, nb = len(a), len(b)
     dp = np.full((na+1, nb+1), np.inf)
     dp[0,0] = 0
@@ -510,34 +473,21 @@ def dtw_distance(a, b):
 
 
 def interpolate_curve(jd, y, jd_common):
-    """Interpola la curva EMERREL a la misma grilla usada en el clustering."""
     return np.interp(jd_common, jd, y)
 
-# ===============================================================
-# 🔧 NORMALIZAR EMERREL SIMULADA A LA MISMA ESCALA QUE LOS PATRONES
-# ===============================================================
-# Los patrones históricos fueron normalizados dividiendo por su máximo.
-# Por lo tanto, debemos hacer lo mismo con la EMERREL simulada.
+# Normalizar EMERREL simulada
 if emerrel.max() > 0:
     emerrel_norm = emerrel / emerrel.max()
 else:
     emerrel_norm = emerrel.copy()
 
-# ---------------------------------------------------------------
-# Interpolar curva simulada sobre JD_COMMON
-# ---------------------------------------------------------------
 curve_interp_year = interpolate_curve(dias, emerrel_norm, JD_COMMON)
 
-# ---------------------------------------------------------------
-# Obtener medoides reales (ya normalizados)
-# ---------------------------------------------------------------
-med0 = curves_interp[medoids_k3[0]]   # Patrón 0 — Intermedio/Bimodal
-med1 = curves_interp[medoids_k3[1]]   # Patrón 1 — Tardío/Extendido
-med2 = curves_interp[medoids_k3[2]]   # Patrón 2 — Temprano/Compacto
+# Medoides por cluster
+med0 = curves_interp[medoids_k3[0]]   # Cluster 0
+med1 = curves_interp[medoids_k3[1]]   # Cluster 1
+med2 = curves_interp[medoids_k3[2]]   # Cluster 2
 
-# ---------------------------------------------------------------
-# Cálculo de distancias DTW a cada patrón
-# ---------------------------------------------------------------
 d0 = dtw_distance(curve_interp_year, med0)
 d1 = dtw_distance(curve_interp_year, med1)
 d2 = dtw_distance(curve_interp_year, med2)
@@ -545,58 +495,59 @@ d2 = dtw_distance(curve_interp_year, med2)
 dist_vector = np.array([d0, d1, d2])
 cluster_pred = int(np.argmin(dist_vector))
 
-# ---------------------------------------------------------------
-# Nombres y colores de clusters
-# ---------------------------------------------------------------
+# Definición ordenada de patrones (1 = temprano compacto)
 cluster_names = {
-    0: "🌾 Intermedio / Bimodal",
     1: "🌱 Temprano / Compacto",
+    0: "🌾 Intermedio / Bimodal",
     2: "🍂 Tardío / Extendido"
 }
 
 cluster_colors = {
+    1: "green",
     0: "blue",
-    1: "green",     # temprano
-    2: "orange"     # tardío
+    2: "orange"
 }
 
 cluster_desc = {
-    0: "Patrón mixto con dos pulsos bien diferenciados: uno temprano moderado y uno otoñal fuerte.",
-    1: "Patrón temprano y muy concentrado, con emergencia dominante en feb–mar y pico marcado antes de abril.",
-    2: "Patrón tardío/extenso con emergencia sostenida abril–junio y fuerte cola otoñal."
+    1: (
+        "Patrón temprano, compacto y altamente concentrado.\n"
+        "- Emergencia dominante en febrero–marzo.\n"
+        "- Pico marcado antes de abril.\n"
+        "- Requiere manejo anticipado (residuales tempranos, monitoreo intenso)."
+    ),
+    0: (
+        "Patrón mixto/bimodal con dos pulsos.\n"
+        "- Pulso temprano moderado + pulso otoñal fuerte.\n"
+        "- Exige doble estrategia: residual temprano + postemergente táctico en otoño.\n"
+        "- Es uno de los patrones más desafiantes para el manejo."
+    ),
+    2: (
+        "Patrón tardío/extenso con prolongada emergencia otoñal.\n"
+        "- Actividad principal abril–junio.\n"
+        "- Cola larga que puede extender el riesgo hasta invierno.\n"
+        "- Requiere monitoreo extendido y flexibilidad en el control postemergente."
+    )
 }
 
-
-# ---------------------------------------------------------------
-# MOSTRAR RESULTADO
-# ---------------------------------------------------------------
 st.markdown(f"""
 ## 🎯 Patrón asignado por análisis funcional K=3:
-### <span style='color:{cluster_colors[cluster_pred]}; font-size:30px;'>
-{cluster_names[cluster_pred]}
+### <span style='color:{cluster_colors.get(cluster_pred, "black")}; font-size:30px;'>
+{cluster_names.get(cluster_pred, f"Cluster {cluster_pred}")}
 </span>
 """, unsafe_allow_html=True)
 
-st.info(cluster_desc[cluster_pred])
+st.info(cluster_desc.get(cluster_pred, "Patrón no documentado en la descripción."))
 
 # ===============================================================
-# 🔧 Función robusta para convertir fechas de cualquier tipo
+# 🔧 Función robusta para convertir fechas
 # ===============================================================
 def safe_to_date(x):
-    """
-    Convierte numpy.datetime64, datetime, Timestamp, día juliano (int/float),
-    string o None a una fecha legible. Nunca lanza excepción.
-    """
     if x is None:
         return "No definido"
-
-    # Intento 1 → conversión directa
     try:
         return str(pd.to_datetime(x).date())
     except:
         pass
-
-    # Intento 2 → interpretar como día juliano
     try:
         jd = int(x)
         year = pd.Timestamp.today().year
@@ -604,72 +555,53 @@ def safe_to_date(x):
         return str(fecha.date())
     except:
         pass
-
     return str(x)
 
-
 # ===============================================================
-# 🔧 Cálculo del pico de emergencia
+# 🔍 Métricas de emergencia y pico
 # ===============================================================
 peak = emerrel.max() if len(emerrel) > 0 else 0
 
 if len(emerrel) > 0:
     idx_peak = int(np.argmax(emerrel))
-    dia_peak = fechas[idx_peak]   # fecha real en lugar de JD
+    dia_peak = fechas[idx_peak]
 else:
     dia_peak = None
 
 fecha_pico_segura = safe_to_date(dia_peak)
 
-
-# ===============================================================
-# 📝 RESUMEN DEL DIAGNÓSTICO (CLASIFICACIÓN K=3)
-# ===============================================================
-resumen_diagnostico = {
-    "Patrón asignado": cluster_names[cluster_pred],
-    "Cluster ID": int(cluster_pred),
-    "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
-    "Momento crítico": safe_to_date(fecha_crit),
-    "Fecha del pico": fecha_pico_segura,
-}
+if emerrel.sum() > 0:
+    frac_temprana = emerrel[dias < 90].sum() / emerrel.sum()
+    frac_tardia   = emerrel[dias > 120].sum() / emerrel.sum()
+else:
+    frac_temprana = 0.0
+    frac_tardia   = 0.0
 
 st.subheader("📋 Resumen del diagnóstico funcional")
-st.write(resumen_diagnostico)
 
-
-# ===============================================================
-# 🔍 Análisis fino de intensidad de emergencia
-# ===============================================================
-st.subheader("🔍 Evaluación fina de intensidad emergente")
-
-if emerrel.sum() > 0:
-    frac_tardia   = emerrel[dias > 120].sum() / emerrel.sum()
-    frac_temprana = emerrel[dias < 90].sum() / emerrel.sum()
-else:
-    frac_tardia = 0
-    frac_temprana = 0
-
-st.write({
+resumen_diagnostico = {
+    "Patrón asignado": cluster_names.get(cluster_pred, f"Cluster {cluster_pred}"),
+    "Cluster ID": int(cluster_pred),
     "Pico máximo (EMERREL)": float(peak),
     "Fecha del pico": fecha_pico_segura,
     "Proporción temprana (< JD 90)": round(frac_temprana, 3),
     "Proporción tardía (> JD 120)": round(frac_tardia, 3),
-})
-
+}
+st.write(resumen_diagnostico)
 
 # ===============================================================
-# 🤖 INTERPRETACIÓN AUTOMÁTICA DEL PATRÓN
+# 🧠 Interpretación agronómica del patrón K=3
 # ===============================================================
 st.subheader("🧠 Interpretación agronómica del patrón K=3")
 
-if cluster_pred == 2:
+if cluster_pred == 1:
     # Temprano / Compacto
     if frac_temprana > 0.60:
         st.success("🌱 **Año muy temprano**, con >60% de emergencia en la primera ventana crítica.")
     else:
         st.warning("🌱 Año temprano, pero con una distribución algo más extendida de lo normal.")
 
-elif cluster_pred == 1:
+elif cluster_pred == 2:
     # Tardío / Extendido
     if frac_tardia > 0.40:
         st.error("🍂 **Año altamente tardío**, con fuerte concentración de emergencia hacia invierno.")
@@ -683,21 +615,9 @@ elif cluster_pred == 0:
     else:
         st.info("🌾 Patrón intermedio, con menor dominancia de uno de los pulsos.")
 
-
 # ===============================================================
-# 🚀 FIN DEL MÓDULO
+# 📈 Gráficos de patrones vs año
 # ===============================================================
-st.markdown("---")
-st.markdown("""
-### ✔ Diagnóstico funcional completado  
-Integración completa del clasificador **K=3 (DTW + K-Medoids)**  
-+ análisis de emergencia + interpretación agronómica automática  
-""")
-
-
-# ---------------------------------------------------------------
-# GRÁFICO — Curva del año vs SU medoide
-# ---------------------------------------------------------------
 st.subheader("📈 Curva del año vs medoide asignado")
 
 fig_cmp, ax_cmp = plt.subplots(figsize=(9,5))
@@ -709,7 +629,7 @@ med_dict = {0: med0, 1: med1, 2: med2}
 
 ax_cmp.plot(JD_COMMON, med_dict[cluster_pred],
             label=f"Medoide del patrón {cluster_pred}",
-            color=cluster_colors[cluster_pred],
+            color=cluster_colors.get(cluster_pred, "gray"),
             linewidth=3, linestyle="--")
 
 ax_cmp.set_xlabel("Día Juliano (grilla unificada)")
@@ -717,16 +637,13 @@ ax_cmp.set_ylabel("EMERREL normalizada")
 ax_cmp.legend()
 st.pyplot(fig_cmp)
 
-# ---------------------------------------------------------------
-# GRÁFICO — Los tres patrones juntos
-# ---------------------------------------------------------------
 st.subheader("🌈 Los tres patrones funcionales (medoides)")
 
 fig_all, ax_all = plt.subplots(figsize=(9,5))
 
 ax_all.plot(JD_COMMON, med0, label="Patrón 0 — Intermedio/Bimodal", color="blue")
 ax_all.plot(JD_COMMON, med1, label="Patrón 1 — Temprano/Compacto",   color="green")
-ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Tardío/Extendido",  color="yellow")
+ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Tardío/Extendido",    color="orange")
 ax_all.plot(JD_COMMON, curve_interp_year, label="Año evaluado", color="black", linewidth=2)
 
 ax_all.set_xlabel("Día Juliano")
@@ -734,120 +651,15 @@ ax_all.set_ylabel("EMERREL normalizada")
 ax_all.legend()
 st.pyplot(fig_all)
 
-# ---------------------------------------------------------------
-# Mostrar distancias numéricas
-# ---------------------------------------------------------------
+# ===============================================================
+# 📏 Distancias DTW
+# ===============================================================
 st.subheader("📏 Distancias DTW a los 3 patrones")
 st.write({
     "Patrón 0 – Intermedio/Bimodal": float(d0),
-    "Patrón 1 – Tardío/Extendido": float(d1),
-    "Patrón 2 – Temprano/Compacto": float(d2)
+    "Patrón 1 – Temprano/Compacto": float(d1),
+    "Patrón 2 – Tardío/Extendido": float(d2)
 })
-
-# ===============================================================
-# 🔧 Conversión robusta de fechas (pico, momento crítico, etc.)
-# ===============================================================
-
-def safe_to_date(x):
-    """
-    Convierte numpy.datetime64, datetime, Timestamp, día juliano (int/float),
-    string o None a una fecha legible. Nunca lanza excepción.
-    """
-    if x is None:
-        return "No definido"
-
-    # PUNTO 1 → Intento directo (Timestamp, datetime, numpy.datetime64)
-    try:
-        return str(pd.to_datetime(x).date())
-    except:
-        pass
-
-    # PUNTO 2 → Interpretar como día juliano
-    try:
-        jd = int(x)
-        year = pd.Timestamp.today().year
-        fecha = pd.to_datetime(f"{jd}", format="%j").replace(year=year)
-        return str(fecha.date())
-    except:
-        pass
-
-    # PUNTO 3 → Devolver como string
-    return str(x)
-
-
-# ===============================================================
-# 🔧 Cálculo del pico (usar SIEMPRE antes de construir el resumen)
-# ===============================================================
-
-peak = emerrel.max() if len(emerrel) > 0 else 0
-
-if len(emerrel) > 0:
-    idx_peak = int(np.argmax(emerrel))
-    dia_peak = fechas[idx_peak]   # fecha real
-else:
-    dia_peak = None
-
-fecha_pico_segura = safe_to_date(dia_peak)
-
-
-# ===============================================================
-# 🔧 Construcción del bloque de resumen del diagnóstico
-# ===============================================================
-
-resumen_diagnostico = {
-    "Patrón asignado": cluster_names[cluster_pred],
-    "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
-    "Momento crítico": safe_to_date(fecha_crit) if fecha_crit is not None else "No definido",
-    "Fecha del pico": safe_to_date(dia_peak),
-}
-
-st.write(resumen_diagnostico)
-
-
-# ===============================================================
-# 🔍 Evaluación fina de intensidad emergente (reparada)
-# ===============================================================
-
-st.subheader("🔍 Evaluación fina de intensidad emergente")
-
-# proporciones
-if emerrel.sum() > 0:
-    frac_tardia = emerrel[dias > 120].sum() / emerrel.sum()
-    frac_temprana = emerrel[dias < 90].sum() / emerrel.sum()
-else:
-    frac_tardia = 0
-    frac_temprana = 0
-
-st.write({
-    "Pico máximo (EMERREL)": float(peak),
-    "Fecha del pico": fecha_pico_segura,   # <--- REPARADO
-    "Proporción temprana (< JD 90)": round(frac_temprana, 3),
-    "Proporción tardía (> JD 120)": round(frac_tardia, 3)
-})
-
-
-# ===============================================================
-# 🔧 Comentarios interpretativos (sin cambios)
-# ===============================================================
-
-if pat == 2:
-    if frac_temprana > 0.60:
-        st.success("Año **muy temprano**, con >60% de emergencia en la primera ventana crítica.")
-    else:
-        st.warning("Año temprano, pero con distribución un poco más extendida de lo esperado.")
-
-elif pat == 1:
-    if frac_tardia > 0.40:
-        st.error("Año **altamente tardío**, gran presión de emergencia hacia invierno.")
-    else:
-        st.warning("Año tardío, pero con menor cola de lo habitual.")
-
-elif pat == 0:
-    if frac_temprana > 0.40 and frac_tardia > 0.25:
-        st.info("Año **bimodal clásico**, con pulsos temprano y tardío bien marcados.")
-    else:
-        st.info("Patrón intermedio, aunque con menor fuerza en uno de los pulsos.")
-
 
 # ===============================================================
 # FIN
@@ -855,10 +667,8 @@ elif pat == 0:
 st.markdown("---")
 st.markdown("""
 ### ✔ Aplicación finalizada  
-Versión corregida del bloque de fecha del pico y diagnóstico funcional.
+Versión integrada de **PREDWEEM vK3**: ANN + riesgo + DTW K-Medoids (K=3)  
+con interpretación agronómica automática por patrón.
 """)
-
-
-
 
 
