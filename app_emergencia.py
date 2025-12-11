@@ -627,76 +627,92 @@ st.write({
     "Patrón 2 – Temprano/Compacto": float(d2)
 })
 
-
 # ===============================================================
-# 🔧 Conversión robusta de la fecha del pico
+# 🔧 Conversión robusta de fechas (pico, momento crítico, etc.)
 # ===============================================================
 
 def safe_to_date(x):
     """
-    Convierte cualquier tipo (numpy.datetime64, datetime, Timestamp,
-    día juliano, string o None) en una fecha legible.
-    Nunca lanza excepción.
+    Convierte numpy.datetime64, datetime, Timestamp, día juliano (int/float),
+    string o None a una fecha legible. Nunca lanza excepción.
     """
     if x is None:
         return "No definido"
 
-    # Intento 1: convertir directamente a datetime
+    # PUNTO 1 → Intento directo (Timestamp, datetime, numpy.datetime64)
     try:
         return str(pd.to_datetime(x).date())
-    except Exception:
+    except:
         pass
 
-    # Intento 2: si es un número, interpretarlo como día juliano
+    # PUNTO 2 → Interpretar como día juliano
     try:
         jd = int(x)
         year = pd.Timestamp.today().year
         fecha = pd.to_datetime(f"{jd}", format="%j").replace(year=year)
         return str(fecha.date())
-    except Exception:
+    except:
         pass
 
-    # Último recurso: devolver como string
+    # PUNTO 3 → Devolver como string
     return str(x)
 
+
 # ===============================================================
-# 🔧 Construcción del bloque de resumen
+# 🔧 Cálculo del pico (usar SIEMPRE antes de construir el resumen)
+# ===============================================================
+
+peak = emerrel.max() if len(emerrel) > 0 else 0
+
+if len(emerrel) > 0:
+    idx_peak = int(np.argmax(emerrel))
+    dia_peak = fechas[idx_peak]   # fecha real
+else:
+    dia_peak = None
+
+fecha_pico_segura = safe_to_date(dia_peak)
+
+
+# ===============================================================
+# 🔧 Construcción del bloque de resumen del diagnóstico
 # ===============================================================
 
 resumen_diagnostico = {
     "Patrón asignado": patron_seleccionado,
     "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
-    "Momento crítico": safe_to_date(fecha_crit) if fecha_crit is not None else "No definido",
-    "Fecha del pico": safe_to_date(dia_peak),
+    "Momento crítico": safe_to_date(fecha_crit),
+    "Fecha del pico": fecha_pico_segura,
 }
 
 st.write(resumen_diagnostico)
 
 
+# ===============================================================
+# 🔍 Evaluación fina de intensidad emergente (reparada)
+# ===============================================================
 
-
-
-
-# ---------------------------------------------------------------
-# EXTRA: INTENSIDAD DE RIESGO SEGÚN LA CURVA REAL
-# ---------------------------------------------------------------
 st.subheader("🔍 Evaluación fina de intensidad emergente")
 
-# Cálculo simple de indicadores
-peak = emerrel.max()
-dia_peak = fechas[np.argmax(emerrel)]
-
-frac_tardia = emerrel[dias > 120].sum() / emerrel.sum() if emerrel.sum() > 0 else 0
-frac_temprana = emerrel[dias < 90].sum() / emerrel.sum() if emerrel.sum() > 0 else 0
+# proporciones
+if emerrel.sum() > 0:
+    frac_tardia = emerrel[dias > 120].sum() / emerrel.sum()
+    frac_temprana = emerrel[dias < 90].sum() / emerrel.sum()
+else:
+    frac_tardia = 0
+    frac_temprana = 0
 
 st.write({
     "Pico máximo (EMERREL)": float(peak),
-    "Fecha del pico": str(dia_peak.date()),
+    "Fecha del pico": fecha_pico_segura,   # <--- REPARADO
     "Proporción temprana (< JD 90)": round(frac_temprana, 3),
     "Proporción tardía (> JD 120)": round(frac_tardia, 3)
 })
 
-# Comentarios interpretativos
+
+# ===============================================================
+# 🔧 Comentarios interpretativos (sin cambios)
+# ===============================================================
+
 if pat == 2:
     if frac_temprana > 0.60:
         st.success("Año **muy temprano**, con >60% de emergencia en la primera ventana crítica.")
@@ -715,18 +731,15 @@ elif pat == 0:
     else:
         st.info("Patrón intermedio, aunque con menor fuerza en uno de los pulsos.")
 
-# ---------------------------------------------------------------
-# FIN DE LA APLICACIÓN
-# ---------------------------------------------------------------
+
+# ===============================================================
+# FIN
+# ===============================================================
 st.markdown("---")
 st.markdown("""
 ### ✔ Aplicación finalizada  
-Esta versión de **PREDWEEM vK3** incorpora ANN + análisis funcional completo + DTW K-Medoids  
-y reemplaza totalmente al clasificador basado en percentiles.
-
-Para comentarios o mejoras, simplemente indicá lo que necesitás.
+Versión corregida del bloque de fecha del pico y diagnóstico funcional.
 """)
-
 
 
 
