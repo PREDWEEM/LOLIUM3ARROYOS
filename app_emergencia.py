@@ -662,13 +662,101 @@ st.write({
 })
 
 # ===============================================================
-# FIN
+# 🌾 DESCRIPCIÓN AGRONÓMICA DETALLADA DE LOS 3 PATRONES K=3
 # ===============================================================
-st.markdown("---")
-st.markdown("""
-### ✔ Aplicación finalizada  
-Versión integrada de **PREDWEEM vK3**: ANN + riesgo + DTW K-Medoids (K=3)  
-con interpretación agronómica automática por patrón.
-""")
+
+st.subheader("🌱 Descripción agronómica ampliada del patrón asignado")
+
+descripcion_agronomica_detallada = {
+    1: """
+### 🟢 **Patrón 1 — Temprano / Compacto**
+Este patrón representa los años de **mayor riesgo inicial** para la competencia y fallas de control.
+
+#### 🔬 Dinámica de emergencia
+- Emergencia **muy concentrada en un corto período** (generalmente 20–35 días).
+- Pico marcado **entre fines de febrero y mediados de marzo**.
+- Casi nula emergencia posterior a abril.
+- Relación fuerte con:
+  - precipitaciones de verano,
+  - suelos con buena humedad superficial (post-nap),
+  - temperaturas estables y templadas en febrero.
+
+#### 🎯 Implicancias para el manejo
+- **La ventana crítica ocurre muy temprano**, por lo que:
+  - Los **herbicidas residuales pre-siembra o pre-emergentes** deben estar activos desde fines de febrero.
+  - Los **tratamientos postemergentes** pierden efectividad si se aplican después del pico.
+- Recomendado en cultivos de invierno:
+  - Residuales de alta persistencia.
+  - Monitoreo inmediato en la primera quincena de marzo.
+- Riesgo elevado de:
+  - Lotes sucios tempranos.
+  - Interferencia inicial con cultivos de siembra otoñal temprana.
+
+#### 📌 Síntesis agronómica
+Un patrón que **recompensa el manejo anticipado** y castiga la demora; si se controla temprano, el año puede ser fácil.
+""",
+
+    0: """
+### 🔵 **Patrón 0 — Intermedio / Bimodal**
+Es el patrón **más complejo** desde el manejo debido a su dualidad.
+
+#### 🔬 Dinámica de emergencia
+- Dos picos bien reconocibles:
+  - **Uno temprano** (marzo).
+  - **Uno tardío** (mediados de mayo o incluso junio).
+- Entre ambos picos se observa una meseta o período de baja actividad.
+- Alta variabilidad interanual dentro del grupo.
+- Asociado a:
+  - alternancia de ciclos húmedo–seco,
+  - temperaturas otoñales erráticas,
+  - rearme de humedad superficial tardío.
+
+#### 🎯 Implicancias para el manejo
+- Requiere **doble estrategia**:
+  1. **Protección residual temprana**, especialmente si hay cultivos de fina.
+  2. **Refuerzos post-emergentes** o residuales de segunda ventana hacia mayo–junio.
+- El mayor desafío:
+  - Percepción engañosa: luego del primer pico parece que el año “termina”, pero llega el **segundo pulso fuerte**.
+- Importante:
+  - Mantener monitoreo durante todo abril–mayo.
+  - Considerar productos con persistencia media-alta.
+
+#### 📌 Síntesis agronómica
+Patrón “trampas” para el manejo: **si no se atiende el segundo pulso**, el lote se descontrola. Manejo escalonado obligatorio.
+""",
+
+    2: """
+### 🟠 **Patrón 2 — Tardío / Extendido**
+Años donde la emergencia mayor ocurre **tarde y durante un largo período**.
+
+#### 🔬 Dinámica de emergencia
+- Emergencia creciente a partir de abril.
+- Pico marcado en **mayo** (incluso junio en algunos años).
+- Cola extensa que puede llegar a julio.
+- Asociado a:
+  - otoños húmedos,
+  - años fríos con baja evaporación,
+  - suelos que retienen humedad por largos períodos.
+
+#### 🎯 Implicancias para el manejo
+- Los residuales aplicados en febrero–marzo **no alcanzan** a cubrir la ventana efectiva.
+- Se vuelve imprescindible:
+  - Programar **postemergentes estratégicos** en varias rondas.
+  - Flexibilidad en fechas de aplicación (no depender de un único tratamiento).
+  - Mantener monitoreo continuo durante mayo y junio.
+- Impactos económicos:
+  - Aumenta el costo del control.
+  - Impacta cultivos tardíos (cebada sembrada tarde, verdeos, pasturas).
+
+#### 📌 Síntesis agronómica
+Año “largo y agotador”: la emergencia **no es alta en intensidad**, pero sí en **duración**, exigiendo persistencia del manejo.
+"""
+}
+
+# Mostrar descripción final
+st.markdown(descripcion_agronomica_detallada.get(
+    cluster_pred,
+    "No hay descripción disponible para este patrón."
+))
 
 
