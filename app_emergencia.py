@@ -794,10 +794,10 @@ fecha_pico_segura = safe_to_date(dia_peak)
 # ===============================================================
 
 resumen_diagnostico = {
-    "Patrón asignado": patron_seleccionado,
+    "Patrón asignado": cluster_names[cluster_pred],
     "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
-    "Momento crítico": safe_to_date(fecha_crit),
-    "Fecha del pico": fecha_pico_segura,
+    "Momento crítico": safe_to_date(fecha_crit) if fecha_crit is not None else "No definido",
+    "Fecha del pico": safe_to_date(dia_peak),
 }
 
 st.write(resumen_diagnostico)
