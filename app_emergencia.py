@@ -608,8 +608,8 @@ st.subheader("🌈 Los tres patrones funcionales (medoides)")
 fig_all, ax_all = plt.subplots(figsize=(9,5))
 
 ax_all.plot(JD_COMMON, med0, label="Patrón 0 — Intermedio/Bimodal", color="blue")
-ax_all.plot(JD_COMMON, med1, label="Patrón 1 — Tardío/Extendido",   color="green")
-ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Temprano/Compacto",  color="yellow")
+ax_all.plot(JD_COMMON, med1, label="Patrón 1 — Temprano/Compacto",   color="green")
+ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Tardío/Extendido",  color="yellow")
 ax_all.plot(JD_COMMON, curve_interp_year, label="Año evaluado", color="black", linewidth=2)
 
 ax_all.set_xlabel("Día Juliano")
