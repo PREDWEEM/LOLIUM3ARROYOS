@@ -627,6 +627,56 @@ st.write({
     "Patrón 2 – Temprano/Compacto": float(d2)
 })
 
+
+# ===============================================================
+# 🔧 Conversión robusta de la fecha del pico
+# ===============================================================
+
+def safe_to_date(x):
+    """
+    Convierte cualquier tipo (numpy.datetime64, datetime, Timestamp,
+    día juliano, string o None) en una fecha legible.
+    Nunca lanza excepción.
+    """
+    if x is None:
+        return "No definido"
+
+    # Intento 1: convertir directamente a datetime
+    try:
+        return str(pd.to_datetime(x).date())
+    except Exception:
+        pass
+
+    # Intento 2: si es un número, interpretarlo como día juliano
+    try:
+        jd = int(x)
+        year = pd.Timestamp.today().year
+        fecha = pd.to_datetime(f"{jd}", format="%j").replace(year=year)
+        return str(fecha.date())
+    except Exception:
+        pass
+
+    # Último recurso: devolver como string
+    return str(x)
+
+# ===============================================================
+# 🔧 Construcción del bloque de resumen
+# ===============================================================
+
+resumen_diagnostico = {
+    "Patrón asignado": patron_seleccionado,
+    "Probabilidad máxima": round(float(prob_max), 3) if prob_max is not None else "No calculado",
+    "Momento crítico": safe_to_date(fecha_crit) if fecha_crit is not None else "No definido",
+    "Fecha del pico": safe_to_date(dia_peak),
+}
+
+st.write(resumen_diagnostico)
+
+
+
+
+
+
 # ---------------------------------------------------------------
 # EXTRA: INTENSIDAD DE RIESGO SEGÚN LA CURVA REAL
 # ---------------------------------------------------------------
