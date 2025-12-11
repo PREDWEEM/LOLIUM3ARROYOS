@@ -492,13 +492,12 @@ DTW_hist        = np.array(cluster_model["DTW_matrix"])
 JD_COMMON       = np.array(cluster_model["JD_common"])
 curves_interp   = np.array(cluster_model["curves_interp"])   # matriz (N, T)
 
-
-# ---------------------------------------------------------------
+# ===============================================================
 # FUNCIONES AUXILIARES
-# ---------------------------------------------------------------
+# ===============================================================
 def dtw_distance(a, b):
     """
-    DTW simple para dos curvas 1D.
+    DTW simple para comparar la forma de dos curvas 1D.
     """
     na, nb = len(a), len(b)
     dp = np.full((na+1, nb+1), np.inf)
@@ -511,50 +510,60 @@ def dtw_distance(a, b):
 
 
 def interpolate_curve(jd, y, jd_common):
-    """
-    Interpola la curva EMERREL del año a la misma grilla usada para clusterizar.
-    """
+    """Interpola la curva EMERREL a la misma grilla usada en el clustering."""
     return np.interp(jd_common, jd, y)
 
+# ===============================================================
+# 🔧 NORMALIZAR EMERREL SIMULADA A LA MISMA ESCALA QUE LOS PATRONES
+# ===============================================================
+# Los patrones históricos fueron normalizados dividiendo por su máximo.
+# Por lo tanto, debemos hacer lo mismo con la EMERREL simulada.
+if emerrel.max() > 0:
+    emerrel_norm = emerrel / emerrel.max()
+else:
+    emerrel_norm = emerrel.copy()
 
 # ---------------------------------------------------------------
-# PREPARAR curva del año
+# Interpolar curva simulada sobre JD_COMMON
 # ---------------------------------------------------------------
-curve_interp_year = interpolate_curve(dias, emerrel, JD_COMMON)
+curve_interp_year = interpolate_curve(dias, emerrel_norm, JD_COMMON)
 
-# Obtener medoides reales
-medA = curves_interp[medoids_k3[0]]
-medB = curves_interp[medoids_k3[1]]
-medC = curves_interp[medoids_k3[2]]
+# ---------------------------------------------------------------
+# Obtener medoides reales (ya normalizados)
+# ---------------------------------------------------------------
+med0 = curves_interp[medoids_k3[0]]   # Patrón 0 — Intermedio/Bimodal
+med1 = curves_interp[medoids_k3[1]]   # Patrón 1 — Tardío/Extendido
+med2 = curves_interp[medoids_k3[2]]   # Patrón 2 — Temprano/Compacto
 
-# Distancias DTW
-dA = dtw_distance(curve_interp_year, medA)
-dB = dtw_distance(curve_interp_year, medB)
-dC = dtw_distance(curve_interp_year, medC)
+# ---------------------------------------------------------------
+# Cálculo de distancias DTW a cada patrón
+# ---------------------------------------------------------------
+d0 = dtw_distance(curve_interp_year, med0)
+d1 = dtw_distance(curve_interp_year, med1)
+d2 = dtw_distance(curve_interp_year, med2)
 
-dist_vector = np.array([dA, dB, dC])
+dist_vector = np.array([d0, d1, d2])
 cluster_pred = int(np.argmin(dist_vector))
-
 
 # ---------------------------------------------------------------
 # Nombres y colores de clusters
 # ---------------------------------------------------------------
 cluster_names = {
-    2: "🌱 Temprano / Compacto",
+    0: "🌾 Intermedio / Bimodal",
     1: "🍂 Tardío / Extendido",
-    0: "🌾 Intermedio / Bimodal"
+    2: "🌱 Temprano / Compacto"
 }
 
 cluster_colors = {
-    2: "green",
+    0: "blue",
     1: "orange",
-    0: "blue"
+    2: "green"
 }
 
 cluster_desc = {
-    2: "Curvas muy concentradas, 1–2 pulsos, emergencia temprana (feb–abr).",
-    1: "Curvas extendidas con cola larga, riesgo elevado tardío (abr–jul).",
-    0: "Curvas mixtas/bimodales: pulso temprano + rebrote otoñal claro."
+    0: "Patrón mixto con dos pulsos: uno temprano débil y uno otoñal fuerte.",
+    1: "Patrón tardío/extenso, riesgo prolongado abril–junio.",
+    2: "Patrón temprano/compacto con emergencia concentrada feb–abr."
 }
 
 # ---------------------------------------------------------------
@@ -569,7 +578,6 @@ st.markdown(f"""
 
 st.info(cluster_desc[cluster_pred])
 
-
 # ---------------------------------------------------------------
 # GRÁFICO — Curva del año vs SU medoide
 # ---------------------------------------------------------------
@@ -578,11 +586,12 @@ st.subheader("📈 Curva del año vs medoide asignado")
 fig_cmp, ax_cmp = plt.subplots(figsize=(9,5))
 
 ax_cmp.plot(JD_COMMON, curve_interp_year,
-            label="Año evaluado", color="black", linewidth=3)
+            label="Año evaluado (normalizado)", color="black", linewidth=3)
 
-medoids_dict = {0: medA, 1: medB, 2: medC}
-ax_cmp.plot(JD_COMMON, medoids_dict[cluster_pred],
-            label=f"Medoide patrón {cluster_pred}", 
+med_dict = {0: med0, 1: med1, 2: med2}
+
+ax_cmp.plot(JD_COMMON, med_dict[cluster_pred],
+            label=f"Medoide del patrón {cluster_pred}",
             color=cluster_colors[cluster_pred],
             linewidth=3, linestyle="--")
 
@@ -591,114 +600,32 @@ ax_cmp.set_ylabel("EMERREL normalizada")
 ax_cmp.legend()
 st.pyplot(fig_cmp)
 
-
 # ---------------------------------------------------------------
-# GRÁFICO — Los 3 patrones juntos
+# GRÁFICO — Los tres patrones juntos
 # ---------------------------------------------------------------
 st.subheader("🌈 Los tres patrones funcionales (medoides)")
 
 fig_all, ax_all = plt.subplots(figsize=(9,5))
 
-ax_all.plot(JD_COMMON, medA, label="Patrón 0 — Intermedio/Bimodal", color="blue")
-ax_all.plot(JD_COMMON, medB, label="Patrón 1 — Tardío/Extendido",   color="orange")
-ax_all.plot(JD_COMMON, medC, label="Patrón 2 — Temprano/Compacto",  color="green")
+ax_all.plot(JD_COMMON, med0, label="Patrón 0 — Intermedio/Bimodal", color="blue")
+ax_all.plot(JD_COMMON, med1, label="Patrón 1 — Tardío/Extendido",   color="orange")
+ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Temprano/Compacto",  color="green")
 ax_all.plot(JD_COMMON, curve_interp_year, label="Año evaluado", color="black", linewidth=3)
 
 ax_all.set_xlabel("Día Juliano")
-ax_all.set_ylabel("EMERREL interpolada")
+ax_all.set_ylabel("EMERREL normalizada")
 ax_all.legend()
 st.pyplot(fig_all)
-
 
 # ---------------------------------------------------------------
 # Mostrar distancias numéricas
 # ---------------------------------------------------------------
 st.subheader("📏 Distancias DTW a los 3 patrones")
 st.write({
-    "Patrón 0 – Intermedio/Bimodal": float(dA),
-    "Patrón 1 – Tardío/Extendido": float(dB),
-    "Patrón 2 – Temprano/Compacto": float(dC)
+    "Patrón 0 – Intermedio/Bimodal": float(d0),
+    "Patrón 1 – Tardío/Extendido": float(d1),
+    "Patrón 2 – Temprano/Compacto": float(d2)
 })
-
-
-# ===============================================================
-# 🌱 DIAGNÓSTICO AGRONÓMICO SEGÚN EL PATRÓN K=3
-# ===============================================================
-st.header("🧠 Diagnóstico agronómico integrado (según patrón K=3)")
-
-pat = cluster_pred  # alias
-
-# ---------------------------------------------------------------
-# DEFINICIONES AGRONÓMICAS POR CLUSTER
-# ---------------------------------------------------------------
-diagnostico = {
-    2: {
-        "titulo": "🌱 PATRÓN TEMPRANO / COMPACTO",
-        "color": "green",
-        "resumen": """
-        Emergencia muy concentrada entre febrero y abril. 
-        Uno o dos pulsos dominantes y poca cola tardía.
-        Este patrón implica una ventana crítica MUY temprana y necesidad de actuar
-        preventivamente (residuales y monitoreo intensivo temprano).
-        """,
-        "manejo": [
-            "Aplicar residuales **antes del 10 de marzo**.",
-            "Monitoreo intensivo durante febrero–marzo.",
-            "Control postemergente casi siempre anticipado.",
-            "Años favorables para lograr supresión temprana y reducir carga anual."
-        ]
-    },
-
-    1: {
-        "titulo": "🍂 PATRÓN TARDÍO / EXTENDIDO",
-        "color": "orange",
-        "resumen": """
-        Curvas extensas o multimodales con cola prolongada hacia otoño-invierno.
-        Alta proporción de emergencia después de abril.
-        Requiere una estrategia de manejo prolongada y flexible.
-        """,
-        "manejo": [
-            "Monitoreo extendido hasta **junio/julio**.",
-            "Refuerzo obligatorio con **postemergente tardío**.",
-            "Años de mayor riesgo de escapes.",
-            "Evitar quedar con el lote 'descubierto' después de abril."
-        ]
-    },
-
-    0: {
-        "titulo": "🌾 PATRÓN INTERMEDIO / BIMODAL",
-        "color": "blue",
-        "resumen": """
-        Emergencia mixta: un pulso temprano moderado y un segundo pulso otoñal fuerte.
-        Indica un año de comportamiento dual: no es totalmente temprano ni totalmente tardío.
-        """,
-        "manejo": [
-            "Usar un **residual temprano**, pero sin confiarse.",
-            "Planificar **una segunda intervención** en otoño si el rebrote es alto.",
-            "Aumenta la incertidumbre: monitoreo cada 7 días desde febrero a mayo.",
-            "Importante ajustar estrategias según lluvias otoñales."
-        ]
-    }
-}
-
-# ---------------------------------------------------------------
-# MOSTRAR DIAGNÓSTICO
-# ---------------------------------------------------------------
-titulo = diagnostico[pat]["titulo"]
-color  = diagnostico[pat]["color"]
-
-st.markdown(
-    f"## <span style='color:{color}; font-size:28px;'>{titulo}</span>",
-    unsafe_allow_html=True
-)
-
-st.markdown("### 📌 Resumen agronómico del patrón")
-st.write(diagnostico[pat]["resumen"])
-
-st.markdown("### 🔧 Recomendaciones de manejo prioritarias")
-
-for rec in diagnostico[pat]["manejo"]:
-    st.markdown(f"- {rec}")
 
 # ---------------------------------------------------------------
 # EXTRA: INTENSIDAD DE RIESGO SEGÚN LA CURVA REAL
