@@ -578,40 +578,121 @@ elif cluster_pred == 0:
         st.info("🌾 Patrón intermedio, con menor dominancia de uno de los pulsos.")
 
 # ===============================================================
-# 📈 Gráficos de patrones vs año
+# 📈 GRÁFICOS INTERACTIVOS — PATRÓN vs AÑO
 # ===============================================================
-st.subheader("📈 Curva del año vs medoide asignado")
+st.subheader("📈 Curva del año vs medoide asignado (INTERACTIVO)")
 
-fig_cmp, ax_cmp = plt.subplots(figsize=(9,5))
-
-ax_cmp.plot(JD_COMMON, curve_interp_year,
-            label="Año evaluado (normalizado)", color="black", linewidth=3)
-
+# Diccionario de medoides ya calculado
 med_dict = {0: med0, 1: med1, 2: med2}
 
-ax_cmp.plot(JD_COMMON, med_dict[cluster_pred],
-            label=f"Medoide del patrón {cluster_pred}",
-            color=cluster_colors.get(cluster_pred, "gray"),
-            linewidth=3, linestyle="--")
+# --------------------------
+# FIGURA 1 — AÑO vs MEDOIDE
+# --------------------------
+fig1 = go.Figure()
 
-ax_cmp.set_xlabel("Día Juliano (grilla unificada)")
-ax_cmp.set_ylabel("EMERREL normalizada")
-ax_cmp.legend()
-st.pyplot(fig_cmp)
+# Curva del año evaluado
+fig1.add_trace(go.Scatter(
+    x=JD_COMMON,
+    y=curve_interp_year,
+    mode='lines',
+    name='Año evaluado (normalizado)',
+    line=dict(color='black', width=4),
+    hovertemplate="JD %{x}<br>Valor %{y:.3f}<extra></extra>"
+))
 
-st.subheader("🌈 Los tres patrones funcionales (medoides)")
+# Medoide asignado
+fig1.add_trace(go.Scatter(
+    x=JD_COMMON,
+    y=med_dict[cluster_pred],
+    mode='lines',
+    name=f"Medoide patrón {cluster_pred}",
+    line=dict(color=cluster_colors.get(cluster_pred,'gray'), width=3, dash='dash'),
+    hovertemplate="JD %{x}<br>Valor %{y:.3f}<extra></extra>"
+))
 
-fig_all, ax_all = plt.subplots(figsize=(9,5))
+fig1.update_layout(
+    title="Curva del año vs medoide asignado (interactivo)",
+    xaxis_title="Día Juliano",
+    yaxis_title="EMERREL normalizada",
+    height=450,
+    hovermode="x unified"
+)
 
-ax_all.plot(JD_COMMON, med0, label="Patrón 0 — Intermedio/Bimodal", color="blue")
-ax_all.plot(JD_COMMON, med1, label="Patrón 1 — Temprano/Compacto",   color="green")
-ax_all.plot(JD_COMMON, med2, label="Patrón 2 — Tardío/Extendido",    color="orange")
-ax_all.plot(JD_COMMON, curve_interp_year, label="Año evaluado", color="black", linewidth=2)
+st.plotly_chart(fig1, use_container_width=True)
 
-ax_all.set_xlabel("Día Juliano")
-ax_all.set_ylabel("EMERREL normalizada")
-ax_all.legend()
-st.pyplot(fig_all)
+
+# ===============================================================
+# 🌈 GRÁFICO INTERACTIVO DE LOS 3 PATRONES + AÑO
+# ===============================================================
+st.subheader("🌈 Los tres patrones funcionales (medoides) — INTERACTIVO")
+
+# Selector de patrones a mostrar
+opciones = {
+    "Patrón 0 – Intermedio/Bimodal": 0,
+    "Patrón 1 – Temprano/Compacto": 1,
+    "Patrón 2 – Tardío/Extendido": 2,
+    "Año evaluado": 99
+}
+
+seleccion = st.multiselect(
+    "Seleccioná qué curvas visualizar:",
+    options=list(opciones.keys()),
+    default=list(opciones.keys())  # por defecto todas
+)
+
+# --------------------------
+# FIGURA 2 — MULTI-PATRONES
+# --------------------------
+fig2 = go.Figure()
+
+for label in seleccion:
+    idx = opciones[label]
+
+    if idx == 0:
+        fig2.add_trace(go.Scatter(
+            x=JD_COMMON, y=med0,
+            mode='lines',
+            name="Patrón 0 – Intermedio/Bimodal",
+            line=dict(color="blue", width=3),
+            hovertemplate="JD %{x}<br>%{y:.3f}<extra></extra>"
+        ))
+
+    if idx == 1:
+        fig2.add_trace(go.Scatter(
+            x=JD_COMMON, y=med1,
+            mode='lines',
+            name="Patrón 1 – Temprano/Compacto",
+            line=dict(color="green", width=3),
+            hovertemplate="JD %{x}<br>%{y:.3f}<extra></extra>"
+        ))
+
+    if idx == 2:
+        fig2.add_trace(go.Scatter(
+            x=JD_COMMON, y=med2,
+            mode='lines',
+            name="Patrón 2 – Tardío/Extendido",
+            line=dict(color="orange", width=3),
+            hovertemplate="JD %{x}<br>%{y:.3f}<extra></extra>"
+        ))
+
+    if idx == 99:  # curva del año
+        fig2.add_trace(go.Scatter(
+            x=JD_COMMON, y=curve_interp_year,
+            mode='lines',
+            name="Año evaluado",
+            line=dict(color="black", width=4),
+            hovertemplate="JD %{x}<br>%{y:.3f}<extra></extra>"
+        ))
+
+fig2.update_layout(
+    title="Patrones funcionales K=3 y curva del año (interactivo)",
+    xaxis_title="Día Juliano",
+    yaxis_title="EMERREL normalizada",
+    height=500,
+    hovermode="x unified"
+)
+
+st.plotly_chart(fig2, use_container_width=True)
 
 # ===============================================================
 # 📏 Distancias DTW
@@ -716,5 +797,4 @@ st.markdown(descripcion_agronomica_detallada.get(
     cluster_pred,
     "No hay descripción disponible para este patrón."
 ))
-
 
