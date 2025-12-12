@@ -780,27 +780,6 @@ st.write({
     "Cobertura relativa de temporada (~1-ene a 1-oct)": f"{cobertura*100:.1f} %",
 })
 
-# ===============================================================
-# 🔧 PERCENTILES SOBRE CURVA TRUNCADA
-# ===============================================================
-res = calc_percentiles_trunc(dias, emerac)
-
-if res is None:
-    st.error("No se pudieron calcular percentiles.")
-    st.stop()
-
-d25, d50, d75, d95 = res
-
-st.subheader("📌 Percentiles simulados del año (sobre lo emergido hasta la fecha)")
-st.write({
-    "d25 (del período observado)": round(d25, 1),
-    "d50 (del período observado)": round(d50, 1),
-    "d75 (del período observado)": round(d75, 1),
-    "d95 (del período observado)": round(d95, 1)
-})
-
-
-
 
 
 
